@@ -32,11 +32,11 @@ class SelfBalancingRobotEnv(gym.Env):
 
         # Action and observation spaces
         # Observation space: inclination angle, angular velocity, linear position and velocity (could be added: other axis for position and last action)
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float64)
 
         # Action space: torque applied to the wheels
         self.action_limit = 4.0
-        self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float32)
+        self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
 
         self.max_pitch = max_pitch  # Maximum pitch angle before truncation
         
@@ -122,7 +122,7 @@ class SelfBalancingRobotEnv(gym.Env):
         """
         sensor_data = self.data.sensordata
         accel = sensor_data[0:3]  # Get the accelerometer data
-        gyro = sensor_data[3:6]  # Get the gyroscope data
+        gyro = sensor_data[3:7]  # Get the gyroscope data
         joint_pos = sensor_data[6:8]  # Get the joint positions
         joint_vel = sensor_data[8:10]  # Get the joint velocities
         torques = self.data.ctrl  # Get the torques applied to the wheels
@@ -135,15 +135,15 @@ class SelfBalancingRobotEnv(gym.Env):
         # The reward is negative to encourage the robot to balance
         max_reward = 1.0
         # pitch_reward = float((-abs(pitch)**4)*(max_reward/self.max_pitch**4) + max_reward)
-        pitch_reward = np.exp(-(pitch**2)/0.3)
-        gyro_norm = np.linalg.norm(gyro)
-        torque_norm = np.linalg.norm(torques)
-        vel_norm = np.linalg.norm(vel)
-        pos_norm = np.linalg.norm(pos)
-        
-        reward = pitch_reward - 0.01 * gyro_norm - 0.01 * torque_norm - 0.3 * vel_norm - 0.1 * pos_norm
+
         
         return reward
+    
+    def _kernel(x: float, alpha: float) -> float:
+        """
+        Re
+        """
+        return np.exp(-(x**2)/alpha)
         
     def _get_obs(self) -> np.ndarray:
         """
@@ -158,13 +158,12 @@ class SelfBalancingRobotEnv(gym.Env):
         pitch = euler[1]
         pitch_vel = self.data.qvel[4] # for the moment it is useless
 
-        x_pos = self.data.qpos[0]
-        x_vel = self.data.qvel[0]
+        gyro = self.data.sensordata[3:6]  # Gyroscope data
         
         left_wheel_torque = self.data.ctrl[0]
         right_wheel_torque = self.data.ctrl[1]
 
-        return np.array([pitch, pitch_vel, x_pos, x_vel, left_wheel_torque, right_wheel_torque], dtype=np.float32)
+        return np.array([pitch, pitch_vel, gyro[2], left_wheel_torque, right_wheel_torque], dtype=np.float32)
 
     def _get_info(self):
         raise NotImplementedError("This method should be implemented in subclasses.")

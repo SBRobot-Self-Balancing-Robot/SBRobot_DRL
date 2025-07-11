@@ -3,7 +3,7 @@ from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 import uuid
-from src.env.self_balancing_robot_env import SelfBalancingRobotEnv  # Assicurati che il path sia corretto
+import src.env.self_balancing_robot_env.self_balancing_robot_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 def make_env():
@@ -11,7 +11,7 @@ def make_env():
     Crea un'istanza dell'ambiente SelfBalancingRobotEnv.
     """
     def _init():
-        env = SelfBalancingRobotEnv()
+        env = gym.make("SelfBalancingRobot-v0")
         env = Monitor(env)
         check_env(env, warn=True)
         return env
@@ -27,9 +27,9 @@ if __name__ == "__main__":
         print("Model loaded successfully.")
     except FileNotFoundError:
         model = SAC("MlpPolicy", vec_env, verbose=1)
-        model.learn(total_timesteps=1_000_000, progress_bar=True)
+        model.learn(total_timesteps=5_00_000, progress_bar=True)
         file_uuid = str(uuid.uuid4())
-        model.save("ppo_self_balancing_" + file_uuid)
+        model.save("./recordings/ppo_self_balancing_" + file_uuid)
 
     # Test
     env = make_env()()
