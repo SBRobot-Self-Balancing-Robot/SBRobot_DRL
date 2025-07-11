@@ -119,27 +119,41 @@ class SelfBalancingRobotEnv(gym.Env):
         Returns:
             float: The computed reward.
         """
-        sensor_data = self.data.sensordata
-        torques = self.data.ctrl  # Get the torques applied to the wheels
-        
         obs = self._get_obs()
-        
-        vel = self.data.qvel[0:2]
-        pos = self.data.qpos[0:2]
-        # Reward is based on the pitch angle: closer to 0 is better
-        # The reward is negative to encourage the robot to balance
-        # pitch_reward = float((-abs(pitch)**4)*(max_reward/self.max_pitch**4) + max_reward)
+        pitch = obs[0]
+        torques = self.data.ctrl
         torque_norm = np.linalg.norm(torques)
-        
-        pitch_component = self._pitch_reward_component(alpha=0.3)  # Pitch reward component
-        vel_component = self._velocity_reward_component(alpha=0.1)
-        gyro_component = self._gyro_reward_component(alpha=0.05)  # Gyroscope reward component
-        wheel_sign, wheel_vel, wheel_delta = self._wheels_reward_component(alpha=0.1)
+        wheel_vel = self.data.qvel[6:8]
+        wheel_speed = np.linalg.norm(wheel_vel)
 
+        # Reward components
+        pitch_component = self._kernel(pitch, alpha=0.2)
+        gyro_component = self._gyro_reward_component(alpha=0.05)
+        vel_component = self._velocity_reward_component(alpha=0.01)
 
-        reward =  pitch_component + 2 * gyro_component - 0.01 * torque_norm
-        return float(reward)
-    
+        # Inverse kernel grows with instability → allow energy use when pitch is high
+        pitch_instability = 1.0 - pitch_component  # ≈ 1 se inclinato, ≈ 0 se dritto
+
+        # Reward components
+        vel_component = self._velocity_reward_component(alpha=0.01)
+        gyro_component = self._gyro_reward_component(alpha=0.05)
+
+        # Penalize torque ONLY when the robot is near equilibrium (small pitch)
+        torque_penalty = torque_norm * pitch_component  # penalizza solo se dritto
+
+        # Penalize wheel movement if unnecessary (near stability)
+        movement_penalty = wheel_speed * pitch_component
+
+        # Final reward
+        reward = (
+            0.7 * vel_component +
+            0.3 * pitch_instability * gyro_component -
+            0.01 * torque_penalty -
+            0.3 * movement_penalty
+        )
+
+        return reward
+
     def _pitch_reward_component(self, alpha: float) -> float:
         """"
         Compute the reward based on the pitch angle.
@@ -184,7 +198,7 @@ class SelfBalancingRobotEnv(gym.Env):
         Returns:
             float: The computed reward based on the gyroscope data.
         """
-        gyro = self.data.sensordata[4:6] 
+        gyro = self.data.sensordata[3:6] 
         gyro_norm = np.linalg.norm(gyro)
         gyro_reward = self._kernel(float(gyro_norm), float(alpha))  # Reward based on the gyroscope data
         return gyro_reward
