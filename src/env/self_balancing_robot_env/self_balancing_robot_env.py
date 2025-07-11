@@ -12,7 +12,7 @@ from mujoco.viewer import launch_passive
 
 class SelfBalancingRobotEnv(gym.Env):
     
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.9, frame_skip: int = 10):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 1.0472, frame_skip: int = 10):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -32,10 +32,10 @@ class SelfBalancingRobotEnv(gym.Env):
 
         # Action and observation spaces
         # Observation space: inclination angle, angular velocity, linear position and velocity (could be added: other axis for position and last action)
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float64)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float64)
 
         # Action space: torque applied to the wheels
-        self.action_limit = 4.0
+        self.action_limit = 10.0
         self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
 
         self.max_pitch = max_pitch  # Maximum pitch angle before truncation
@@ -63,14 +63,13 @@ class SelfBalancingRobotEnv(gym.Env):
         self.data.ctrl[:] = np.clip(action, -self.action_limit, self.action_limit)  # Apply action (torque to the wheels)
         for skip in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)  # Step the simulation
-
         obs = self._get_obs()
         reward = self._compute_reward()  # Compute the reward based on the pitch angle
         terminated = self._is_terminated()
         truncated = self._is_truncated()
         # info = self._get_info()
         if truncated:
-            reward = -100  # Penalize truncation
+            reward = -100 # Penalize truncation
 
         return obs, reward, terminated, truncated, {}
         
@@ -121,46 +120,74 @@ class SelfBalancingRobotEnv(gym.Env):
             float: The computed reward.
         """
         sensor_data = self.data.sensordata
-        accel = sensor_data[0:3]  # Get the accelerometer data
-        gyro = sensor_data[3:7]  # Get the gyroscope data
-        joint_pos = sensor_data[6:8]  # Get the joint positions
-        joint_vel = sensor_data[8:10]  # Get the joint velocities
         torques = self.data.ctrl  # Get the torques applied to the wheels
         
         obs = self._get_obs()
-        pitch = obs[0]  # Pitch angle from the observation
+        
         vel = self.data.qvel[0:2]
         pos = self.data.qpos[0:2]
         # Reward is based on the pitch angle: closer to 0 is better
         # The reward is negative to encourage the robot to balance
         # pitch_reward = float((-abs(pitch)**4)*(max_reward/self.max_pitch**4) + max_reward)
-        pitch_reward = self._kernel(pitch, 0.5)
         torque_norm = np.linalg.norm(torques)
-        vel_norm = np.linalg.norm(vel)
-        velocity_reward = self._kernel(float(vel_norm), 0.2)
-        gyro_reward = self._kernel(float(gyro[2]), 0.1)
-        pos_reward = self._kernel(float(np.linalg.norm(pos)), 0.3)
+        
+        pitch_component = self._pitch_reward_component(alpha=0.3)  # Pitch reward component
+        vel_component = self._velocity_reward_component(alpha=0.1)
+        gyro_component = self._gyro_reward_component(alpha=0.05)  # Gyroscope reward component
+        wheel_sign, wheel_vel, wheel_delta = self._wheels_reward_component(alpha=0.1)
 
-        reward = pitch_reward * velocity_reward * gyro_reward * pos_reward - 0.05 * torque_norm
 
+        reward =  pitch_component + 2 * gyro_component - 0.01 * torque_norm
         return float(reward)
     
-    def _wheels_reward(self) -> float:
+    def _pitch_reward_component(self, alpha: float) -> float:
+        """"
+        Compute the reward based on the pitch angle.
+        """
+        pitch = self._get_obs()[0]  # Pitch angle from the observation
+        return self._kernel(float(pitch), alpha)  # Reward based on the pitch angle using a Gaussian kernel
+    
+    def _velocity_reward_component(self, alpha: float) -> float:
+        """ 
+        Compute the reward based on the robot's velocity.
+        
+        Returns:
+            float: The computed reward based on the robot's velocity.
+        """
+        vel = self.data.qvel[1:3]
+        vel_norm = np.linalg.norm(vel)
+        velocity_reward = self._kernel(float(vel_norm), alpha)
+
+        return velocity_reward
+    
+    def _wheels_reward_component(self, alpha: float) -> T.Tuple[float, float, float]:
         """
         Compute the reward based on the wheel torques.
         
         Returns:
             float: The computed reward based on the wheel torques.
         """
-        left_wheel_torque = self.data.ctrl[0]
-        right_wheel_torque = self.data.ctrl[1]
         
         wheel_vel = self.data.qvel[6:8]
-
-        angular_velocity_reward = -0.1 * (wheel_vel[0] * wheel_vel[1])  # Reward based on the angular velocity of the wheels
-
+        # take the sign of the product of the wheel velocities to determine the direction of rotation
+        sign_component = np.sign(wheel_vel[0] * wheel_vel[1])  # Reward based on the direction of the wheel velocities
+        wheel_delta = abs(wheel_vel[0] - wheel_vel[1])  # Difference between the wheel velocities
+        intensity_component = np.linalg.norm(wheel_vel)
+        intensity_component = self._kernel(float(intensity_component), alpha)  # Reward based on the intensity of the wheel velocities
         # Reward is based on the absolute value of the wheel torques
-        return angular_velocity_reward
+        return float(sign_component), float(intensity_component), float(wheel_delta)
+
+    def _gyro_reward_component(self, alpha: float) -> float:
+        """
+        Compute the reward based on the gyroscope data.
+        
+        Returns:
+            float: The computed reward based on the gyroscope data.
+        """
+        gyro = self.data.sensordata[4:6] 
+        gyro_norm = np.linalg.norm(gyro)
+        gyro_reward = self._kernel(float(gyro_norm), float(alpha))  # Reward based on the gyroscope data
+        return gyro_reward
     
     def _kernel(self, x: float, alpha: float) -> float:
         """
@@ -190,8 +217,10 @@ class SelfBalancingRobotEnv(gym.Env):
         
         left_wheel_torque = self.data.ctrl[0]
         right_wheel_torque = self.data.ctrl[1]
+        
+        vel = self.data.qvel[0:2]  # x, y velocity
 
-        return np.array([pitch, pitch_vel, gyro[2], left_wheel_torque, right_wheel_torque], dtype=np.float32)
+        return np.array([pitch, pitch_vel, gyro[2], left_wheel_torque, right_wheel_torque, vel[0], vel[1]], dtype=np.float64)
 
     def _get_info(self):
         raise NotImplementedError("This method should be implemented in subclasses.")
@@ -219,13 +248,13 @@ class SelfBalancingRobotEnv(gym.Env):
 
     def _initialize_random_state(self):
         # Reset position and velocity
-        self.data.qpos[:3] = [0.0, 0.0, 0.25]  # Initial position (x, y, z)
-        self.data.qvel[:] = 0.0              # Initial speed
+        self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.25]  # Initial position (x, y, z)
+        self.data.qvel[:] = 0.0  # Initial speed
 
         # Euler angles: Roll=0, Pitch=random, Yaw=random
         euler = [
             0.0,
-            np.random.uniform(-0.2, 0.2),
+            np.random.uniform(-0.6, 0.6),
             np.random.uniform(-np.pi, np.pi)
         ]
 

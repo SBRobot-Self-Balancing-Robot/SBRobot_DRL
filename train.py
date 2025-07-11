@@ -23,13 +23,16 @@ if __name__ == "__main__":
 
     # Load model if it exists
     try:
-        model = SAC.load("ppo_self_balancing", env=vec_env)
+        model = PPO.load("./recordings/new_stable_", env=vec_env)
         print("Model loaded successfully.")
     except FileNotFoundError:
-        model = SAC("MlpPolicy", vec_env, verbose=1)
-        model.learn(total_timesteps=5_000_000, progress_bar=True)
-        file_uuid = str(uuid.uuid4())
-        model.save("./recordings/ppo_self_balancing_" + file_uuid)
+        print("No pre-trained model found, starting training from scratch.")
+        model = None
+        
+    model = PPO("MlpPolicy", vec_env, verbose=1)
+    model.learn(total_timesteps=1_000_000, progress_bar=True)
+    file_uuid = str(uuid.uuid4())
+    model.save("./recordings/new_reward_2")
 
     # Test
     env = make_env()()
