@@ -220,7 +220,7 @@ class SelfBalancingRobotEnv(gym.Env):
 
         linear_vel_x, linear_vel_y, linear_vel_z = self._get_robot_linear_velocity() # Linear velocity (x, y, z)
         linear_norm = np.linalg.norm([linear_vel_x, linear_vel_y])
-        linear_penalty = self._kernel(float(linear_norm), alpha=0.001) if abs(linear_norm) <= 0.001 else 10 # Penalty for linear velocity
+        linear_penalty = self._kernel(float(linear_norm), alpha=0.001) # Penalty for linear velocity
 
         # Motor/action data
         torques = self.data.ctrl # Applied torques or motor commands
