@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SelfBalancingRobotEnv(gym.Env):
     
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 10):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 1.0, frame_skip: int = 10):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -50,7 +50,11 @@ class SelfBalancingRobotEnv(gym.Env):
         self.last_direction = np.zeros(2)
         self.count_dir = 0
         
-        
+        # Alpha values
+        self.alpha_yaw_displacement_penalty = 0.3
+        self.alpha_pos_displacement_penalty = 0.1
+        self.alpha_linear_velocity_penalty = 0.001
+        self.alpha_torque_penalty = 0.5
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]:
         """
@@ -195,7 +199,7 @@ class SelfBalancingRobotEnv(gym.Env):
         """
         roll, pitch, yaw = self._get_body_orientation_angles()
         yaw_displacement = abs(yaw - self.last_yaw)
-        yaw_displacement_penalty = self._kernel(yaw_displacement, alpha=0.01)
+        yaw_displacement_penalty = self._kernel(yaw_displacement, alpha=self.alpha_yaw_displacement_penalty)
         if self.count_yaw == 10:
             self.last_yaw = yaw
             self.count_yaw = 0
@@ -207,25 +211,18 @@ class SelfBalancingRobotEnv(gym.Env):
         x, y, z = self._get_position()
         position = np.array([x, y])
         pos_displacement = np.linalg.norm(position - self.last_position)
-        pos_displacement_penalty = self._kernel(float(pos_displacement), alpha=0.1)
+        pos_displacement_penalty = self._kernel(float(pos_displacement), alpha=self.alpha_pos_displacement_penalty)
 
         linear_vel_x, linear_vel_y, linear_vel_z = self._get_robot_linear_velocity()
         linear_norm = np.linalg.norm([linear_vel_x, linear_vel_y])
-        linear_penalty = self._kernel(float(linear_norm), alpha=0.001)
-
-        linear_direction = np.dot([linear_vel_x, linear_vel_y], self.last_direction)
-        
-        if self.count_dir == 5:
-            self.count_dir = 0
-            self.last_direction = [linear_vel_x, linear_vel_y]
-        self.count_dir += 1
+        linear_penalty = self._kernel(float(linear_norm), alpha=self.alpha_linear_velocity_penalty)
 
         torques = self.data.ctrl
         torque_norm = np.linalg.norm(torques)
-        torque_penalty = self._kernel(float(torque_norm), alpha=0.5)
+        torque_penalty = self._kernel(float(torque_norm), alpha=self.alpha_torque_penalty)
 
-        if pos_displacement == 0.0:
-            reward = yaw_displacement_penalty * torque_penalty * linear_penalty - linear_direction
+        if pos_displacement <= 0.1:
+            reward = yaw_displacement_penalty * torque_penalty * linear_penalty * pos_displacement_penalty
         else:
             reward = yaw_displacement_penalty * torque_penalty * pos_displacement_penalty
 

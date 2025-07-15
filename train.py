@@ -7,7 +7,6 @@ import time
 import argparse
 import typing as T
 import gymnasium as gym
-
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -15,7 +14,7 @@ from stable_baselines3.common.env_checker import check_env
 
 from src.env.self_balancing_robot_env.self_balancing_robot_env import SelfBalancingRobotEnv
 
-def save_configuration(env, filename: str, folder_name: str):
+def save_configuration(env, model: str, filename: str, folder_name: str, iterations: int, processes: int):
     # Save the configuration
     if folder_name is not None:
         path = f"./policies/{folder_name}"
@@ -32,12 +31,21 @@ def save_configuration(env, filename: str, folder_name: str):
     # Save the configuration to a file
     with open(f"{path}/{filename}.json", 'w') as f:
         config = {
+            "model": model,
+            "iterations": iterations,
+            "processes": processes,
             "policy": filename,
             "max_time": unwrapped_env.max_time,
             "max_pitch": unwrapped_env.max_pitch,
             "frame_skip": unwrapped_env.frame_skip,
             "weights": {
                 "upright": unwrapped_env.weight_fall_penalty,
+            },
+            "alpha_values": {
+                "yaw_displacement_penalty": unwrapped_env.alpha_yaw_displacement_penalty,
+                "pos_displacement_penalty": unwrapped_env.alpha_pos_displacement_penalty,
+                "linear_velocity_penalty": unwrapped_env.alpha_linear_velocity_penalty,
+                "torque_penalty": unwrapped_env.alpha_torque_penalty
             }
         }
         json.dump(config, f, indent=4)
@@ -145,7 +153,7 @@ if __name__ == "__main__":
     # Test
     env = make_env()()
     print(env)
-    save_configuration(env=env, filename=FILE_PREFIX, folder_name=FOLDER_PREFIX)
+    save_configuration(env=env, model=MODEL.__name__, filename=FILE_PREFIX, folder_name=FOLDER_PREFIX, iterations=ITERATIONS, processes=PROCESSES)
 
     env.reset()
     obs, _ = env.reset()
