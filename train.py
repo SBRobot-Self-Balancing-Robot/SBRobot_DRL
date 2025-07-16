@@ -14,7 +14,7 @@ from stable_baselines3.common.env_checker import check_env
 
 from src.env.self_balancing_robot_env.self_balancing_robot_env import SelfBalancingRobotEnv
 
-def save_configuration(env, model: str, filename: str, folder_name: str, iterations: int, processes: int):
+def save_configuration(env, xml: str, model: str, filename: str, folder_name: str, iterations: int, processes: int):
     # Save the configuration
     if folder_name is not None:
         path = f"./policies/{folder_name}"
@@ -31,6 +31,7 @@ def save_configuration(env, model: str, filename: str, folder_name: str, iterati
     # Save the configuration to a file
     with open(f"{path}/{filename}.json", 'w') as f:
         config = {
+            "scene": xml,
             "model": model,
             "iterations": iterations,
             "processes": processes,
@@ -57,6 +58,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Training the self-balancing robot with Deep Reinforcement Learning"
     )
+
+    parser.add_argument("--xml-file", type=str, default="./models/scene.xml",
+                       help="Path to the XML file defining the robot and environment (default: ./models/scene.xml)")
     
     parser.add_argument("--model", type=str, default="PPO",
                        help="Model to use for training (default: PPO). Other options: PPO, TD3, A2C, DDPG")
@@ -111,7 +115,7 @@ def _parse_model(model_name: str):
 if __name__ == "__main__":
     # Parse command line arguments
     args = parse_arguments()
-
+    XML_FILE = args.xml_file
     MODEL = _parse_model(args.model)
     PROCESSES = args.processes
     ITERATIONS = args.iterations
@@ -153,7 +157,7 @@ if __name__ == "__main__":
     # Test
     env = make_env()()
     print(env)
-    save_configuration(env=env, model=MODEL.__name__, filename=FILE_PREFIX, folder_name=FOLDER_PREFIX, iterations=ITERATIONS, processes=PROCESSES)
+    save_configuration(env=env, xml=XML_FILE, model=MODEL.__name__, filename=FILE_PREFIX, folder_name=FOLDER_PREFIX, iterations=ITERATIONS, processes=PROCESSES)
 
     env.reset()
     obs, _ = env.reset()
