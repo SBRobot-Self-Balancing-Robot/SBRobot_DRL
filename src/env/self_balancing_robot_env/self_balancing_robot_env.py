@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SelfBalancingRobotEnv(gym.Env):
     
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 1.0, frame_skip: int = 10):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 10):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -40,16 +40,21 @@ class SelfBalancingRobotEnv(gym.Env):
         # Action space: torque applied to the wheels
         self.action_limit = 10.0
         self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
-
+        
+        # Initialize the environment attributes
         self.weight_fall_penalty = 100.0 # Penalty for falling
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
         self.count_pos = 0
         self.last_position = np.zeros(2) # Last position of the robot
         self.count_yaw = 0
         self.last_yaw = 0.0 # Last yaw angle
-        self.last_direction = np.zeros(2)
-        self.count_dir = 0
-        
+
+        # Initialize observation values
+        self.roll, self.pitch, self.yaw = 0.0, 0.0, 0.0 # Orientation angles of the robot [roll, pitch, yaw]
+        self.body_ang_vel = np.zeros(3) # Angular velocity of the robot [gyro_x, gyro_y, gyro_z]
+        self.linear_vel = np.zeros(3) # Linear velocity of the robot [linear_vel_x, linear_vel_y, linear_vel_z]
+        self.x, self.y, self.z = 0.0, 0.0, 0.0 # Position of the robot [pos_x, pos_y, pos_z]
+
         # Alpha values
         self.alpha_yaw_displacement_penalty = 0.3
         self.alpha_pos_displacement_penalty = 0.1
@@ -73,21 +78,22 @@ class SelfBalancingRobotEnv(gym.Env):
                 - info (dict): Additional information about the environment.
         """
         self.data.ctrl[:] = np.clip(action, -self.action_limit, self.action_limit)  # Apply action (torque to the wheels)
+        
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)  # Step the simulation
+        
         obs = self._get_obs()
+        
         reward = self._compute_reward(np.array(action)) # Compute the reward based on the action taken
+        
         terminated = self._is_terminated()
+        
         truncated = self._is_truncated()
         
         # Penalità di caduta al termine dell'episodio
-        x, y, z = self._get_position()  # Ottieni la posizione del robot
-        position = np.array([x, y])
+        position = np.array([self.x, self.y])
         pos_displacement = np.linalg.norm(position - self.last_position)
-        roll, pitch, yaw = self._get_body_orientation_angles()
-        yaw_displacement = abs(yaw - self.last_yaw)
-        linear_vel_x, linear_vel_y, linear_vel_z = self._get_robot_linear_velocity() # Velocità lineare del robot (x, y, z)
-        linear_norm = np.linalg.norm([linear_vel_x, linear_vel_y])
+        yaw_displacement = abs(self.yaw - self.last_yaw)
         if truncated:
             reward -= (self.weight_fall_penalty + 10 * yaw_displacement + 10 * pos_displacement)
         elif terminated and (pos_displacement < 0.1):
@@ -197,24 +203,21 @@ class SelfBalancingRobotEnv(gym.Env):
         Returns:
             float: The computed reward.
         """
-        roll, pitch, yaw = self._get_body_orientation_angles()
-        yaw_displacement = abs(yaw - self.last_yaw)
+        yaw_displacement = abs(self.yaw - self.last_yaw)
         yaw_displacement_penalty = self._kernel(yaw_displacement, alpha=self.alpha_yaw_displacement_penalty)
         if self.count_yaw == 10:
-            self.last_yaw = yaw
+            self.last_yaw = self.yaw
             self.count_yaw = 0
         self.count_yaw += 1
 
-        if abs(yaw) < 0.08:
+        if abs(self.yaw) < 0.08:
             self.last_position = self.data.qpos[:2].copy()
 
-        x, y, z = self._get_position()
-        position = np.array([x, y])
+        position = np.array([self.x, self.y])
         pos_displacement = np.linalg.norm(position - self.last_position)
         pos_displacement_penalty = self._kernel(float(pos_displacement), alpha=self.alpha_pos_displacement_penalty)
 
-        linear_vel_x, linear_vel_y, linear_vel_z = self._get_robot_linear_velocity()
-        linear_norm = np.linalg.norm([linear_vel_x, linear_vel_y])
+        linear_norm = np.linalg.norm([self.linear_vel[0], self.linear_vel[1]])
         linear_penalty = self._kernel(float(linear_norm), alpha=self.alpha_linear_velocity_penalty)
 
         torques = self.data.ctrl
@@ -238,24 +241,23 @@ class SelfBalancingRobotEnv(gym.Env):
             Ho mantenuto l'output di 7 elementi, che ora include:
             [pitch, roll, yaw, body_ang_vel_x, body_ang_vel_y, linear_vel_x, linear_vel_y]
         """
-        roll, pitch, yaw = self._get_body_orientation_angles()
-        body_ang_vel = self._get_body_angular_velocities() # [gyro_x, gyro_y, gyro_z]
-        linear_vel = self._get_robot_linear_velocity() # [vel_x, vel_y, vel_z]
-        x, y, z = self._get_position() # [pos_x, pos_y, pos_z]
-        
+        self.roll, self.pitch, self.yaw = self._get_body_orientation_angles()
+        self.body_ang_vel = self._get_body_angular_velocities() # [gyro_x, gyro_y, gyro_z]
+        self.linear_vel = self._get_robot_linear_velocity() # [vel_x, vel_y, vel_z]
+        self.x, self.y, self.z = self._get_position() # [pos_x, pos_y, pos_z]
+
         return np.array([
-            pitch,          
-            roll,           
-            yaw,            
-            body_ang_vel[1], 
-            body_ang_vel[2],
-            linear_vel[0],  
-            linear_vel[1],  
-            x,              
-            y,              
+            self.pitch,          
+            self.roll,           
+            self.yaw,            
+            self.body_ang_vel[1], 
+            self.body_ang_vel[2],
+            self.linear_vel[0],  
+            self.linear_vel[1],  
+            self.x,              
+            self.y,              
         ], dtype=np.float64)
-
-
+    
     def _get_info(self):
         return {}
 
@@ -270,11 +272,8 @@ class SelfBalancingRobotEnv(gym.Env):
         return self._is_truncated() or self.data.time >= self.max_time
     
     def _is_truncated(self) -> bool:
-        # Get current orientation in Euler angles
-        roll, pitch, yaw = self._get_body_orientation_angles()
-
         # Truncate if the pitch or roll angle is too high (robot falls)
-        return bool(abs(pitch) > self.max_pitch or abs(roll) > 0.06 ) # pitch, roll, yaw thresholds
+        return bool(abs(self.pitch) > self.max_pitch or abs(self.roll) > 0.06 ) # pitch, roll, yaw thresholds
 
 
     def _initialize_random_state(self):
