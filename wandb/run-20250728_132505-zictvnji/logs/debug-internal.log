@@ -1,0 +1,12 @@
+{"time":"2025-07-28T13:25:05.216835124+02:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2025-07-28T13:25:05.53611287+02:00","level":"INFO","msg":"stream: created new stream","id":"zictvnji"}
+{"time":"2025-07-28T13:25:05.536335854+02:00","level":"INFO","msg":"stream: started","id":"zictvnji"}
+{"time":"2025-07-28T13:25:05.536335655+02:00","level":"INFO","msg":"handler: started","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:05.536353102+02:00","level":"INFO","msg":"sender: started","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:05.536362752+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:34.925988548+02:00","level":"INFO","msg":"stream: closing","id":"zictvnji"}
+{"time":"2025-07-28T13:25:35.431423369+02:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-07-28T13:25:35.715612732+02:00","level":"INFO","msg":"handler: closed","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:35.71564126+02:00","level":"INFO","msg":"writer: Close: closed","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:35.715647895+02:00","level":"INFO","msg":"sender: closed","stream_id":"zictvnji"}
+{"time":"2025-07-28T13:25:35.715677611+02:00","level":"INFO","msg":"stream: closed","id":"zictvnji"}

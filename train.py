@@ -4,6 +4,7 @@ Training script for the Self-Balancing Robot environment using Stable Baselines3
 import os
 import json
 import time
+import wandb
 import argparse
 import typing as T
 import gymnasium as gym
@@ -131,7 +132,18 @@ if __name__ == "__main__":
         FILE_PREFIX = f"{MODEL.__name__}_{timestamp}"
     if FOLDER_PREFIX is None:
         FOLDER_PREFIX = FILE_PREFIX
-
+    wandb.init(
+        project="self_balancing_robot",
+        config={
+            "model": args.model,
+            "iterations": ITERATIONS,
+            "processes": PROCESSES,
+            "xml_file": XML_FILE,
+            "policies_folder": POLICIES_FOLDER,
+            "file_prefix": FILE_PREFIX,
+            "folder_prefix": FOLDER_PREFIX
+        }
+    )
     print("Training configuration:")
     print(f"  - Model: {MODEL}")
     print(f"  - Processes: {PROCESSES}")
@@ -151,7 +163,43 @@ if __name__ == "__main__":
         print("No pre-trained model found, starting training from scratch.")
         model = MODEL("MlpPolicy", vec_env, verbose=1)
 
-    model.learn(total_timesteps=ITERATIONS, progress_bar=True)
+    # Log training progress to wandb
+    class WandbCallback:
+        def __init__(self):
+            self.episode_rewards = []
+            self.episode_lengths = []
+            self.episode_start_time = time.time()
+            self.current_episode_reward = 0
+
+        def __call__(self, locals_, globals_):
+            # Aggiorna la reward corrente
+            if "reward" in locals_ and locals_["reward"] is not None:
+                self.current_episode_reward += locals_["reward"]
+
+            # Quando l'episodio termina, calcola le statistiche
+            if "done" in locals_ and locals_["done"]:
+                episode_length = time.time() - self.episode_start_time
+                self.episode_lengths.append(episode_length)
+                self.episode_rewards.append(self.current_episode_reward)
+
+                # Logga reward media e durata media
+                avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+                avg_length = sum(self.episode_lengths) / len(self.episode_lengths)
+                wandb.log({
+                    "avg_reward": avg_reward,
+                    "avg_episode_length": avg_length,
+                    "episode_reward": self.current_episode_reward,
+                    "episode_length": episode_length
+                })
+
+                # Resetta per il prossimo episodio
+                self.episode_start_time = time.time()
+                self.current_episode_reward = 0
+
+            return True
+
+    model.learn(total_timesteps=ITERATIONS, progress_bar=True, callback=WandbCallback())
+
     model.save(f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/{FILE_PREFIX}")
 
     # Test

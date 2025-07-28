@@ -1,0 +1,30 @@
+Training configuration:
+  - Model: <class 'stable_baselines3.sac.sac.SAC'>
+  - Processes: 100
+  - Iterations: 1000000
+  - Base file name: SAC_2025-07-28_13-26-36
+  - Policies folder: ./policies
+  - Model to load: None
+
+No pre-trained model found, starting training from scratch.
+Using cuda device
+[2K[35m   0%[0m [38;5;237m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[0m [32m100/1,000,000 [0m [ [33m0:00:00[0m < [36m-:--:--[0m , [31m? it/s[0m ]
+[?25h
+/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/lib/python3.12/site-packages/stable_baselines3/common/save_util.py:284: UserWarning: Path 'policies/SAC_2025-07-28_13-26-36' does not exist. Will create it.
+  warnings.warn(f"Path '{path.parent}' does not exist. Will create it.")
+/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/lib/python3.12/site-packages/stable_baselines3/common/env_checker.py:462: UserWarning: We recommend you to use a symmetric and normalized Box action space (range=[-1, 1]) cf. https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
+  warnings.warn(
+/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/lib/python3.12/site-packages/stable_baselines3/common/env_checker.py:473: UserWarning: Your action space has dtype float64, we recommend using np.float32 to avoid cast errors.
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/train.py", line 192, in <module>
+    env.render()
+  File "/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/lib/python3.12/site-packages/gymnasium/core.py", line 337, in render
+    return self.env.render()
+           ^^^^^^^^^^^^^^^^^
+  File "/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/lib/python3.12/site-packages/gymnasium/core.py", line 337, in render
+    return self.env.render()
+           ^^^^^^^^^^^^^^^^^
+  File "/home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/src/env/self_balancing_robot_env/self_balancing_robot_env.py", line 128, in render
+    raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")
+RuntimeError: Viewer is not running. Please reset the environment or start the viewer.

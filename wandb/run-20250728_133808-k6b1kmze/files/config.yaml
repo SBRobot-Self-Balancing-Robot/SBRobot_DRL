@@ -1,0 +1,68 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            8so93btiz4xgrdp65jla45hdswmvyh7b:
+                args:
+                    - --model
+                    - SAC
+                    - --processes
+                    - "120"
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 12
+                cpu_count_logical: 20
+                cudaVersion: "12.4"
+                disk:
+                    /:
+                        total: "1055703064576"
+                        used: "271760850944"
+                email: umbertofrancesco.carolini@poliba.it
+                executable: /home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/venv/bin/python
+                git:
+                    commit: 8dc798c39696e6e21f1520a93f0d3ba73ab5cba5
+                    remote: https://github.com/FraPis23/self_balancing_robot_with_DRL.git
+                gpu: NVIDIA GeForce RTX 4060 Ti
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 4352
+                      memoryTotal: "17175674880"
+                      name: NVIDIA GeForce RTX 4060 Ti
+                      uuid: GPU-bd55f96f-f274-4815-8d39-a20be590d8a5
+                host: icaro
+                memory:
+                    total: "67226169344"
+                os: Linux-6.11.0-29-generic-x86_64-with-glibc2.39
+                program: /home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL/train.py
+                python: CPython 3.12.2
+                root: /home/umberto-francesco-carolini/Desktop/self_balancing_robot_with_DRL
+                startedAt: "2025-07-28T11:38:08.489122Z"
+                writerId: 8so93btiz4xgrdp65jla45hdswmvyh7b
+        m: []
+        python_version: 3.12.2
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 16
+            "4": 3.12.2
+            "5": 0.21.0
+            "12": 0.21.0
+            "13": linux-x86_64
+file_prefix:
+    value: SAC_2025-07-28_13-38-08
+folder_prefix:
+    value: SAC_2025-07-28_13-38-08
+iterations:
+    value: 1000000
+model:
+    value: SAC
+policies_folder:
+    value: ./policies
+processes:
+    value: 120
+xml_file:
+    value: ./models/scene.xml
