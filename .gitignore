@@ -4,3 +4,5 @@ __pycache__/
 policies/
 recordings/
 wandb/
+wandb/*.log
+wandb/latest-run

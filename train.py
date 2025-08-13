@@ -8,10 +8,13 @@ import wandb
 import argparse
 import typing as T
 import gymnasium as gym
+import numpy as np
+from src.env.wrappers.reward import RewardWrapper
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import BaseCallback
 
 from src.env.self_balancing_robot_env.self_balancing_robot_env import SelfBalancingRobotEnv
 from src.env.wrappers.reward import RewardWrapper
@@ -27,9 +30,15 @@ def save_configuration(env, xml: str, model: str, filename: str, folder_name: st
         # Create the configuration directory if it doesn't exist
         os.makedirs(os.path.dirname(path), exist_ok=True)
         
-    # Get the unwrapped environment to access its attributes
+    # Get the unwrapped environment to access its base attributes
     unwrapped_env = env.unwrapped
-    
+
+    # Find the RewardWrapper to access the RewardCalculator
+    rw = env
+    while hasattr(rw, "env") and not isinstance(rw, RewardWrapper):
+        rw = rw.env
+    reward_calc = rw.reward_calculator if isinstance(rw, RewardWrapper) else None
+
     # Save the configuration to a file
     with open(f"{path}/{filename}.json", 'w') as f:
         config = {
@@ -41,14 +50,18 @@ def save_configuration(env, xml: str, model: str, filename: str, folder_name: st
             "max_time": unwrapped_env.max_time,
             "max_pitch": unwrapped_env.max_pitch,
             "frame_skip": unwrapped_env.frame_skip,
-            "weights": {
-                "upright": unwrapped_env.weight_fall_penalty,
-            },
             "alpha_values": {
-                "yaw_displacement_penalty": unwrapped_env.alpha_yaw_displacement_penalty,
-                "pos_displacement_penalty": unwrapped_env.alpha_pos_displacement_penalty,
-                "linear_velocity_penalty": unwrapped_env.alpha_linear_velocity_penalty,
-                "torque_penalty": unwrapped_env.alpha_torque_penalty
+                "alpha_yaw_displacement_penalty": reward_calc.alpha_yaw_displacement_penalty if reward_calc is not None else None,
+                "alpha_pos_displacement_penalty": reward_calc.alpha_pos_displacement_penalty if reward_calc is not None else None,
+                "alpha_linear_velocity_penalty": reward_calc.alpha_linear_velocity_penalty if reward_calc is not None else None,
+                "alpha_torque_penalty": reward_calc.alpha_torque_penalty if reward_calc is not None else None,
+                "weight_fall_penalty": reward_calc.weight_fall_penalty if reward_calc is not None else None,
+                "alpha_yaw_magnitude_penalty": reward_calc.alpha_yaw_magnitude_penalty if reward_calc is not None else None,
+                "anchor_lock_steps": reward_calc.anchor_lock_steps if reward_calc is not None else None,
+                "yaw_settle_thresh": reward_calc.yaw_settle_thresh if reward_calc is not None else None,
+                "lin_settle_thresh": reward_calc.lin_settle_thresh if reward_calc is not None else None,
+                "yaw_disp_settle_thresh": reward_calc.yaw_disp_settle_thresh if reward_calc is not None else None,
+                "torque_persist_penalty_scale": reward_calc.torque_persist_penalty_scale if reward_calc is not None else None
             }
         }
         json.dump(config, f, indent=4)
@@ -115,6 +128,29 @@ def _parse_model(model_name: str):
     else:
         return models["SAC"]  # Default to SAC if the model is not recognized
 
+# Log training progress to wandb
+class WandbCallback(BaseCallback):
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.episode_rewards = []
+        self.episode_lengths = []
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "episode" in info:
+                r = info["episode"]["r"]
+                l = info["episode"]["l"]
+                self.episode_rewards.append(r)
+                self.episode_lengths.append(l)
+                wandb.log({
+                    "episode_reward": r,
+                    "episode_length": l,
+                    "avg_reward_100": float(np.mean(self.episode_rewards[-100:])),
+                    "avg_length_100": float(np.mean(self.episode_lengths[-100:])),
+                })
+        return True
+
 if __name__ == "__main__":
     # Parse command line arguments
     args = parse_arguments()
@@ -163,41 +199,6 @@ if __name__ == "__main__":
         print("No pre-trained model found, starting training from scratch.")
         model = MODEL("MlpPolicy", vec_env, verbose=1)
 
-    # Log training progress to wandb
-    class WandbCallback:
-        def __init__(self):
-            self.episode_rewards = []
-            self.episode_lengths = []
-            self.episode_start_time = time.time()
-            self.current_episode_reward = 0
-
-        def __call__(self, locals_, globals_):
-            # Aggiorna la reward corrente
-            if "reward" in locals_ and locals_["reward"] is not None:
-                self.current_episode_reward += locals_["reward"]
-
-            # Quando l'episodio termina, calcola le statistiche
-            if "done" in locals_ and locals_["done"]:
-                episode_length = time.time() - self.episode_start_time
-                self.episode_lengths.append(episode_length)
-                self.episode_rewards.append(self.current_episode_reward)
-
-                # Logga reward media e durata media
-                avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
-                avg_length = sum(self.episode_lengths) / len(self.episode_lengths)
-                wandb.log({
-                    "avg_reward": avg_reward,
-                    "avg_episode_length": avg_length,
-                    "episode_reward": self.current_episode_reward,
-                    "episode_length": episode_length
-                })
-
-                # Resetta per il prossimo episodio
-                self.episode_start_time = time.time()
-                self.current_episode_reward = 0
-
-            return True
-
     model.learn(total_timesteps=ITERATIONS, progress_bar=True, callback=WandbCallback())
 
     model.save(f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/{FILE_PREFIX}")
@@ -217,3 +218,5 @@ if __name__ == "__main__":
         env.render()
         if terminated or truncated:
             obs, _ = env.reset()
+            
+    print(f"Testing completed {FILE_PREFIX}.")

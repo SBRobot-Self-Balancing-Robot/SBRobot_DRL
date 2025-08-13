@@ -55,11 +55,6 @@ class SelfBalancingRobotEnv(gym.Env):
         self.linear_vel = np.zeros(3) # Linear velocity of the robot [linear_vel_x, linear_vel_y, linear_vel_z]
         self.x, self.y, self.z = 0.0, 0.0, 0.0 # Position of the robot [pos_x, pos_y, pos_z]
 
-        # Alpha values
-        self.alpha_yaw_displacement_penalty = 0.3
-        self.alpha_pos_displacement_penalty = 0.1
-        self.alpha_linear_velocity_penalty = 0.001
-        self.alpha_torque_penalty = 0.5
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]:
         """
@@ -170,6 +165,15 @@ class SelfBalancingRobotEnv(gym.Env):
             np.ndarray: The position of the robot in the order [pos_x, pos_y, pos_z].
         """
         return self.data.qpos[0:3]
+    
+    def _get_torques(self) -> np.ndarray:
+        """
+        Get the torques applied to the robot's wheels.
+        
+        Returns:
+            np.ndarray: The torques applied to the robot's wheels.
+        """
+        return self.data.ctrl
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -185,6 +189,7 @@ class SelfBalancingRobotEnv(gym.Env):
         self.body_ang_vel = self._get_body_angular_velocities() # [gyro_x, gyro_y, gyro_z]
         self.linear_vel = self._get_robot_linear_velocity() # [vel_x, vel_y, vel_z]
         self.x, self.y, self.z = self._get_position() # [pos_x, pos_y, pos_z]
+        self.torque_l, self.torque_r = self._get_torques() # [torque_left, torque_right]
 
         return np.array([
             self.pitch,          
@@ -194,8 +199,10 @@ class SelfBalancingRobotEnv(gym.Env):
             self.body_ang_vel[2],
             self.linear_vel[0],  
             self.linear_vel[1],  
-            self.x,              
-            self.y,              
+            self.torque_l,
+            self.torque_r
+            # self.x,              
+            # self.y,              
         ], dtype=np.float64)
     
     def _get_info(self):
