@@ -97,6 +97,8 @@ def parse_arguments():
     
     parser.add_argument("--processes", type=int, default=50,
                        help="Number of parallel processes for training (default: 50)")
+    parser.add_argument("--device", type=str, default="cpu",
+                       help="Device to use for training (default: cpu). Other options: cpu, cuda")
     
     return parser.parse_args()
 
@@ -162,6 +164,7 @@ if __name__ == "__main__":
     FILE_PREFIX = args.file_prefix
     FOLDER_PREFIX = args.folder_prefix
     POLICIES_FOLDER = args.policies_folder
+    DEVICE = args.device
 
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
     if FILE_PREFIX is None:
@@ -197,12 +200,12 @@ if __name__ == "__main__":
         print("Model loaded successfully.")
     except FileNotFoundError:
         print("No pre-trained model found, starting training from scratch.")
-        model = MODEL("MlpPolicy", vec_env, verbose=1)
+        model = MODEL("MlpPolicy", vec_env, device=DEVICE, verbose=1)
 
     model.learn(total_timesteps=ITERATIONS, progress_bar=True, callback=WandbCallback())
 
     model.save(f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/{FILE_PREFIX}")
-
+    print(f"Model saved to {POLICIES_FOLDER}/{FOLDER_PREFIX}/{FILE_PREFIX}")
     # Test
     env = make_env()()
     save_configuration(
@@ -219,4 +222,3 @@ if __name__ == "__main__":
         if terminated or truncated:
             obs, _ = env.reset()
             
-    print(f"Testing completed {FILE_PREFIX}.")

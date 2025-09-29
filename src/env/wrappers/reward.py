@@ -55,15 +55,15 @@ class RewardCalculator:
     """
     def __init__(self, 
                  alpha_yaw_displacement_penalty=0.3, 
-                 alpha_pos_displacement_penalty=0.01,
-                 alpha_linear_velocity_penalty=0.001, 
+                 alpha_pos_displacement_penalty=0.005,
+                 alpha_linear_velocity_penalty=0.0001, 
                  alpha_torque_penalty=0.025, 
                  weight_fall_penalty=100.0,
                  
                  alpha_yaw_magnitude_penalty=0.3,
-                 anchor_lock_steps=20,
+                 anchor_lock_steps=10,
                  yaw_settle_thresh=0.08,
-                 lin_settle_thresh=0.05,
+                 lin_settle_thresh=0.03,
                  yaw_disp_settle_thresh=0.01,
                  torque_persist_penalty_scale=0.02
                  ):
@@ -90,30 +90,54 @@ class RewardCalculator:
         """
         Compute the reward for the current step, focused on self-balancing and staying still.
 
+        Reward scenarios can be:
+            - Equilibrium and still: high reward
+            - Equilibrium but moving: moderate reward that tends to negative if persistent
+            - Not in equilibrium: negative reward
+
         Args:
             env: environment instance of SelfBalancingRobotEnv.
 
         Returns:
             float: computed reward value.
         """
-        yaw_displacement = abs(env.yaw - env.last_yaw)
-        yaw_displacement_penalty = self._kernel(yaw_displacement, alpha=self.alpha_yaw_displacement_penalty)
         if getattr(env, "count_yaw", None) is None:
             env.count_yaw = 0
+        if getattr(env, "bad_motion_counter", None) is None:
+            env.bad_motion_counter = 0
+
         if env.count_yaw == 10:
             env.last_yaw = env.yaw
+            env.last_linear_vel = env.linear_vel.copy()
             env.count_yaw = 0
         env.count_yaw += 1
 
+        # Count the time slices in which the yaw angle is within the threshold
+        if abs(env.yaw) < self.yaw_settle_thresh and np.linalg.norm(env.linear_vel) > self.lin_settle_thresh:
+            env.bad_motion_counter += 1
+        else:
+            env.bad_motion_counter = 0
+        
+        # Yaw component
+        yaw_displacement = abs(env.yaw - env.last_yaw)
+        yaw_displacement_penalty = self._kernel(yaw_displacement, alpha=self.alpha_yaw_displacement_penalty)
         yaw_magnitude_penalty = self._kernel(abs(env.yaw), alpha=self.alpha_yaw_magnitude_penalty)
+        linear_penalty = self._kernel(float(np.linalg.norm(env.linear_vel)), alpha=self.alpha_linear_velocity_penalty)
 
-        linear_norm = np.linalg.norm([env.linear_vel[0], env.linear_vel[1]])
-        linear_penalty = self._kernel(float(linear_norm), alpha=self.alpha_linear_velocity_penalty)
+        reward = yaw_displacement_penalty * yaw_magnitude_penalty * linear_penalty
+
+        # Linear velocity component
+        # linear_vel_displacement = np.linalg.norm(env.linear_vel)
+        # linear_norm = np.linalg.norm([env.linear_vel[0], env.linear_vel[1]])
+        
+        if env.bad_motion_counter > 10:  
+            # penalità progressiva in base a quanto tempo rimane in quello stato
+            penalty_scale = 1 + 0.1 * (env.bad_motion_counter - 10)
+            reward /= penalty_scale
 
         if self.anchor_position is None:
-            if (abs(env.yaw) < self.yaw_settle_thresh and
-                linear_norm < self.lin_settle_thresh and
-                yaw_displacement < self.yaw_disp_settle_thresh):
+            # fissa l'ancora quando è stabile
+            if abs(env.yaw) < self.yaw_settle_thresh and np.linalg.norm(env.linear_vel) < self.lin_settle_thresh:
                 self.stable_counter += 1
                 if self.stable_counter >= self.anchor_lock_steps:
                     self.anchor_position = env.data.qpos[:2].copy()
@@ -123,7 +147,44 @@ class RewardCalculator:
         else:
             pos_error = np.linalg.norm(env.data.qpos[:2] - self.anchor_position)
             pos_penalty = self._kernel(float(pos_error), alpha=self.alpha_pos_displacement_penalty)
+        
+        
+        persistence_penalty = self.torque_persist_penalty_scale * (self.positive_sign + self.negative_sign)
+        reward -= persistence_penalty
+        # reward = self._check_torque_persistence(env, yaw_displacement_penalty, pos_penalty, linear_penalty, yaw_magnitude_penalty)
+        
+        reward -= 2*pos_penalty
+        
+        # applica eventuali regole di fine episodio
+        reward = self._check_episode_end(
+            env=env,
+            yaw_displacement=yaw_displacement,
+            yaw_magnitude_penalty=yaw_magnitude_penalty,
+            reward=reward,
+            pos_penalty=pos_penalty,
+            linear_penalty=linear_penalty,
+        )
+        
+        return reward
 
+    def reset(self):
+        """
+        Reset of the internal state of the reward calculator.
+        """
+        self.negative_sign = 0
+        self.positive_sign = 0
+        self.anchor_position = None
+        self.stable_counter = 0
+
+    def _check_episode_end(self, env, yaw_displacement, pos_penalty, linear_penalty, yaw_magnitude_penalty, reward): 
+        if env._is_truncated():
+            reward -= (self.weight_fall_penalty + 10 * yaw_displacement)
+        elif env._is_terminated():
+            terminal_bonus = 500.0 * pos_penalty * linear_penalty * yaw_magnitude_penalty
+            reward += terminal_bonus - 3 * (self.positive_sign + self.negative_sign)
+        return reward
+
+    def _check_torque_persistence(self, env, yaw_displacement_penalty, pos_penalty, linear_penalty, yaw_magnitude_penalty):
         if env.torque_l * env.torque_r > 0:
             if np.sign(env.torque_l) > 0:
                 self.positive_sign += 1.0
@@ -139,23 +200,8 @@ class RewardCalculator:
 
         reward = (yaw_displacement_penalty * yaw_magnitude_penalty) * linear_penalty * pos_penalty
         reward -= persistence_penalty
-
-        if env._is_truncated():
-            reward -= (self.weight_fall_penalty + 10 * yaw_displacement)
-        elif env._is_terminated():
-            terminal_bonus = 500.0 * pos_penalty * linear_penalty * yaw_magnitude_penalty
-            reward += terminal_bonus - 3 * (self.positive_sign + self.negative_sign)
-
+        
         return reward
-
-    def reset(self):
-        """
-        Reset of the internal state of the reward calculator.
-        """
-        self.negative_sign = 0
-        self.positive_sign = 0
-        self.anchor_position = None
-        self.stable_counter = 0
 
     def _kernel(self, x: float, alpha: float) -> float:
         """
