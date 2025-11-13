@@ -79,9 +79,9 @@
 
   <sensor>
     <!--  Indices 0, 1, 2-->
-    <accelerometer noise="0.01" site="FRAME" name="accelerometer"/>
+    <accelerometer noise="0.04" site="FRAME" name="accelerometer"/> <!-- 0.04 m/s^2 -->
     <!-- Indices 3, 4, 5 -->
-    <gyro noise="0.01" site="FRAME" name="gyroscope"/>
+    <gyro noise="0.05" site="FRAME" name="gyroscope"/> <!-- 0.05 rad/s -->
     <!-- Indices 6, 7 -->
     <jointpos name="left_wheel_pos" joint="left_wheel_joint"/>
     <jointpos name="right_wheel_pos" joint="right_wheel_joint"/>
