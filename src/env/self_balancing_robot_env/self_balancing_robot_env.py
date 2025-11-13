@@ -35,29 +35,21 @@ class SelfBalancingRobotEnv(gym.Env):
         self.max_time = max_time # Maximum time for the episode
         self.frame_skip = frame_skip # Number of frames to skip in each step   
 
-        # Observation space: pitch, roll, yaw, body_ang_vel_x, body_ang_vel_y, linear_vel_x, linear_vel_y, pos_x, pos_y
+        # Observation space: pitch, roll, yaw, angle_acceleration_x, angle_acceleration_y, linear_velocity_x, linear_velocity_y, pos_x, pos_y
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float64)
         # Action space: torque applied to the wheels
-        self.action_limit = 10.0
+        self.action_limit = 0.135  # Maximum torque that can be applied to the wheels [N·m]
         self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
         
         # Initialize the environment attributes
         self.weight_fall_penalty = 100.0 # Penalty for falling
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
-        self.count_pos = 0
-        self.last_position = np.zeros(2) # Last position of the robot
-        self.count_yaw = 0
-        self.last_yaw = 0.0 # Last yaw angle
-        self.last_linear_vel = np.zeros(3) # Last linear velocity
         
         # Initialize observation values
         self.roll, self.pitch, self.yaw = 0.0, 0.0, 0.0 # Orientation angles of the robot [roll, pitch, yaw]
-        self.body_ang_vel = np.zeros(3) # Angular velocity of the robot [gyro_x, gyro_y, gyro_z]
-        self.linear_vel = np.zeros(3) # Linear velocity of the robot [linear_vel_x, linear_vel_y, linear_vel_z]
-        self.x, self.y, self.z = 0.0, 0.0, 0.0 # Position of the robot [pos_x, pos_y, pos_z]
-        self.bad_motion_counter = 0
-        self.good_behavior_counter = 0
-        self.linear_velocity_threshold = 0.5 # Threshold for linear velocity to consider as bad motion
+        self.angle_acceleration = np.zeros(3) # Angular acceleration of the robot [gyro_x, gyro_y, gyro_z]
+        self.linear_velocity = np.zeros(3) # Linear velocity of the robot [linear_velocity_x, linear_velocity_y, linear_velocity_z]
+        self.wheels_velocity = np.zeros(2) # Angular velocity of the wheels [wheel_left_velocity, wheel_right_velocity]
 
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]:
@@ -126,24 +118,7 @@ class SelfBalancingRobotEnv(gym.Env):
         else:
             raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")
 
-    def _get_body_orientation_angles(self) -> T.Tuple[float, float, float]:
-        """
-        Get the orientation angles of the robot's body in Euler angles (roll, pitch, yaw).
-        
-        Returns:
-            T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the robot's body.
-        """
-        # Convert MuJoCo quaternion [w, x, y, z] into scipy format [x, y, z, w]
-        quat_wxyz = self.data.qpos[3:7]
-        quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
-        
-        euler = R.from_quat(quat_xyzw).as_euler('xyz')
-        roll = euler[0]
-        pitch = euler[1]
-        yaw = euler[2]
-        return float(roll), float(pitch), float(yaw)
-
-    def _get_body_angular_velocities(self) -> np.ndarray:
+    def _get_body_angular_acceleration(self) -> np.ndarray:
         """
         Get the angular velocities of the robot's body.
         
@@ -157,27 +132,34 @@ class SelfBalancingRobotEnv(gym.Env):
         Get the linear velocity of the robot.
         
         Returns:
-            np.ndarray: The linear velocity of the robot in the order [linear_vel_x, linear_vel_y, linear_vel_z].
+            np.ndarray: The linear velocity of the robot in the order [linear_velocity_x, linear_velocity_y, linear_velocity_z].
         """
         return self.data.qvel[0:3]
     
-    def _get_position(self) -> np.ndarray:
+    def _get_body_orientation_angles(self) -> T.Tuple[float, float, float]:
         """
-        Get the position of the robot in the environment.
+        Get the orientation angles of the robot's body in Euler angles (roll, pitch, yaw).
         
         Returns:
-            np.ndarray: The position of the robot in the order [pos_x, pos_y, pos_z].
+            T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the robot's body.
         """
-        return self.data.qpos[0:3]
+        # Usare questi parametri per stimare l'orientamento
+        self.angle_acceleration = self._get_body_angular_acceleration() # [gyro_x, gyro_y, gyro_z]
+        self.linear_velocity = self._get_robot_linear_velocity() # [vel_x, vel_y, vel_z]
+
+        # DA IMPLEMENTARE CORRETTAMENTE
+        return 0, 0, 0
     
-    def _get_torques(self) -> np.ndarray:
+    def _get_wheels_angular_velocity(self) -> T.Tuple[float, float]:
         """
-        Get the torques applied to the robot's wheels.
+        Get the angular velocities of the robot's wheels.
         
         Returns:
-            np.ndarray: The torques applied to the robot's wheels.
+            T.Tuple[float, float]: The angular velocities of the left and right wheels.
         """
-        return self.data.ctrl
+
+        # DA IMPLEMENTARE CORRETTAMENTE
+        return 0, 0
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -187,26 +169,16 @@ class SelfBalancingRobotEnv(gym.Env):
             np.ndarray: The observation vector.
             
             Ho mantenuto l'output di 7 elementi, che ora include:
-            [pitch, roll, yaw, body_ang_vel_x, body_ang_vel_y, linear_vel_x, linear_vel_y]
+            [pitch, roll, yaw, angle_acceleration_x, angle_acceleration_y, linear_velocity_x, linear_velocity_y]
         """
         self.roll, self.pitch, self.yaw = self._get_body_orientation_angles()
-        self.body_ang_vel = self._get_body_angular_velocities() # [gyro_x, gyro_y, gyro_z]
-        self.linear_vel = self._get_robot_linear_velocity() # [vel_x, vel_y, vel_z]
-        self.x, self.y, self.z = self._get_position() # [pos_x, pos_y, pos_z]
-        self.torque_l, self.torque_r = self._get_torques() # [torque_left, torque_right]
-
+        self.right_wheel_velocity, self.left_wheel_velocity = self._get_wheels_angular_velocity()
+        
         return np.array([
-            self.pitch,          
-            self.roll,           
-            self.yaw,            
-            self.body_ang_vel[1], 
-            self.body_ang_vel[2],
-            self.linear_vel[0],  
-            self.linear_vel[1],  
-            self.torque_l,
-            self.torque_r
-            # self.x,              
-            # self.y,              
+            self.pitch,                    
+            self.yaw,
+            self.right_wheel_velocity,
+            self.left_wheel_velocity         
         ], dtype=np.float64)
     
     def _get_info(self):
@@ -232,15 +204,13 @@ class SelfBalancingRobotEnv(gym.Env):
         """
         return bool(
             abs(self.pitch) > self.max_pitch or 
-            abs(self.roll) > 0.06 or
-            (abs(self.linear_vel[0]) > self.linear_velocity_threshold and abs(self.linear_vel[1]) > self.linear_velocity_threshold)
+            abs(self.roll) > 0.06
             )
 
 
     def _initialize_random_state(self):
         # Reset position and velocity
         self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.25]  # Initial position (x, y, z)
-        self.last_position = self.data.qpos[:2].copy()
         self.data.qvel[:] = 0.0  # Initial speed
 
         # Euler angles: Roll=0, Pitch=random, Yaw=random
@@ -253,4 +223,3 @@ class SelfBalancingRobotEnv(gym.Env):
         # Euler → Quaternion [x, y, z, w]
         quat_xyzw = R.from_euler('xyz', euler).as_quat()
         self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
-        self.last_yaw = euler[2]
