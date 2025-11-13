@@ -85,9 +85,6 @@
     <!-- Indices 6, 7 -->
     <jointpos name="left_wheel_pos" joint="left_wheel_joint"/>
     <jointpos name="right_wheel_pos" joint="right_wheel_joint"/>
-    <!-- Indices 8, 9 -->
-    <jointvel name="left_wheel_vel" joint="left_wheel_joint"/>
-    <jointvel name="right_wheel_vel" joint="right_wheel_joint"/>
   </sensor>
 
 </mujoco>
