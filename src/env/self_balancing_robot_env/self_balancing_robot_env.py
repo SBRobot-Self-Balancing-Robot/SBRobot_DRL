@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SelfBalancingRobotEnv(gym.Env):
     
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 1):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 5):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -34,14 +34,14 @@ class SelfBalancingRobotEnv(gym.Env):
         self.data = MjData(self.model)
         self.max_time = max_time # Maximum time for the episode
         self.frame_skip = frame_skip # Number of frames to skip in each step  
-        self.time_step = self.model.opt.timestep * self.frame_skip
+        self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
 
-        # Observation space: pitch, roll, yaw, linear_acceleration_x, linear_acceleration_y, angular_velocity_x, angular_velocity_y, pos_x, pos_y
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float64)
-        # Action space: torque applied to the wheels
-        self.action_limit = 0.135  # Maximum torque that can be applied to the wheels [N·m]
+        # Observation space: pitch, wheel velocities
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64)
+        # Action space: speed control
+        self.action_limit = 6 
         self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
-        
+        self.max_torque = 0.135  # Maximum torque that can be applied to the wheels [N·m]
         # Initialize the environment attributes
         self.weight_fall_penalty = 100.0 # Penalty for falling
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
@@ -73,11 +73,8 @@ class SelfBalancingRobotEnv(gym.Env):
         
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)  # Step the simulation
-        
         obs = self._get_obs()
-        
         terminated = self._is_terminated()
-        
         truncated = self._is_truncated()
         
         return obs, 0.0, terminated, truncated, {}
@@ -99,7 +96,6 @@ class SelfBalancingRobotEnv(gym.Env):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
-        self._last_action = np.zeros(2) # Resetta anche l'ultima azione
         # info = self._get_info()
         obs = self._get_obs()
         return obs, {}
@@ -157,12 +153,15 @@ class SelfBalancingRobotEnv(gym.Env):
         Returns:
             T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the robot's body.
         """
-        # Usare questi parametri per stimare l'orientamento
-        self.linear_acceleration = self._get_body_linear_acceleration() # [gyro_x, gyro_y, gyro_z]
-        self.angular_velocity = self._get_robot_angular_velocity() # [vel_x, vel_y, vel_z]
+        self.linear_acceleration = self._get_body_linear_acceleration() # [accel_x, accel_y, accel_z]
+        self.angular_velocity = self._get_robot_angular_velocity() # [gyro_x, gyro_y, gyro_z]
 
-        # DA IMPLEMENTARE CORRETTAMENTE
-        return 0, 0, 0
+        # Complementary filter to estimate pitch angle
+        self.pitch = 0.996 * (self.pitch + self.angular_velocity[1] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[0], self.linear_acceleration[2]) * 180.0 / np.pi
+        self.roll = 0.996 * (self.roll + self.angular_velocity[0] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[1], self.linear_acceleration[2]) * 180.0 / np.pi
+        self.yaw += self.angular_velocity[2] * self.time_step
+        
+        return self.pitch, self.roll, self.yaw
     
     def _get_wheels_angular_velocity(self) -> T.Tuple[float, float]:
         """
@@ -200,12 +199,11 @@ class SelfBalancingRobotEnv(gym.Env):
             Ho mantenuto l'output di 7 elementi, che ora include:
             [pitch, roll, yaw, linear_acceleration_x, linear_acceleration_y, angular_velocity_x, angular_velocity_y]
         """
-        self.roll, self.pitch, self.yaw = self._get_body_orientation_angles()
+        self.pitch, self.roll, self.yaw = self._get_body_orientation_angles()
         self.right_wheel_velocity, self.left_wheel_velocity = self._get_wheels_angular_velocity()
         
         return np.array([
             self.pitch,                    
-            self.yaw,
             self.right_wheel_velocity,
             self.left_wheel_velocity         
         ], dtype=np.float64)
@@ -225,15 +223,13 @@ class SelfBalancingRobotEnv(gym.Env):
     
     def _is_truncated(self) -> bool:
         """
-        Truncate the episode if the robot's pitch or roll exceeds the maximum allowed values
-        or if the robot exhibits bad motion (high linear velocity in both x and y directions).
+        Truncate the episode if the robot's pitch exceeds the maximum allowed value.
         
         Returns:
             bool: True if the episode is truncated, False otherwise.
         """
         return bool(
-            abs(self.pitch) > self.max_pitch or 
-            abs(self.roll) > 0.06
+            abs(self.pitch) > self.max_pitch
             )
 
 
@@ -243,10 +239,13 @@ class SelfBalancingRobotEnv(gym.Env):
         self.data.qvel[:] = 0.0  # Initial speed
 
         # Euler angles: Roll=0, Pitch=random, Yaw=random
+        self.pitch = np.random.uniform(-0.6, 0.6)
+        self.yaw = np.random.uniform(-np.pi, np.pi)
+        self.roll = 0.0
         euler = [
-            0.0, # Roll
-            np.random.uniform(-0.6, 0.6), # Pitch
-            np.random.uniform(-np.pi, np.pi) # Yaw
+            self.roll, # Roll
+            self.pitch, # Pitch
+            self.yaw  # Yaw
         ]
 
         # Euler → Quaternion [x, y, z, w]

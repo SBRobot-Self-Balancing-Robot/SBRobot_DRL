@@ -1,6 +1,6 @@
 <mujoco>
   <compiler angle="degree" meshdir="./mesh" texturedir="./textures"/>
-  <option timestep="0.001" gravity="0 0 -9.81" integrator="Euler" />
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="Euler" />
   <worldbody>
     <body name="Chassis" pos="0.049248479306697845 -0.8781553506851196 0.23883554339408875" quat="1.3767879636361613e-07 -0.70710688829422 -1.3767875373105198e-07 -0.7071066498756409">
       <inertial mass="0.70"/>
