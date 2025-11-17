@@ -3,24 +3,24 @@
   <option timestep="0.002" gravity="0 0 -9.81" integrator="Euler" />
   <worldbody>
     <body name="Chassis" pos="0.049248479306697845 -0.8781553506851196 0.23883554339408875" quat="1.3767879636361613e-07 -0.70710688829422 -1.3767875373105198e-07 -0.7071066498756409">
-      <inertial mass="0.70"/>
-      <geom type="mesh" name="Chassis geom" mesh="ChassisMesh" rgba="1.0 1.0 1.0 1.0"  />
+      <inertial mass="0.70" pos="0.049248479306697845 -0.8781553506851196 0.23883554339408875"/>
+      <geom type="mesh" name="Chassis geom" mesh="ChassisMesh" rgba="1.0 1.0 1.0 1.0" />
       <joint type="free" name="floating_joint"/>
 
       <body name="Battery" pos="0.003164539346471429 0.040499866008758545 5.587935447692871e-08" quat="0.4999997317790985 0.5 -0.5000003576278687 -0.49999988079071045">
-        <inertial mass="0.59"/>
+        <inertial mass="0.59" pos="0.003164539346471429 0.040499866008758545 5.587935447692871e-08"/>
         <geom type="mesh" name="Battery geom" mesh="BatteryMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       <body name="Display" pos="0.10516458004713058 -0.06546413898468018 0.0" quat="0.4999997913837433 0.5000002384185791 -0.4999997615814209 0.5000001788139343">
-        <inertial mass="0.55"/>
+        <inertial mass="0.55" pos="0.10516458004713058 -0.06546413898468018 0.0"/>
         <geom type="mesh" name="Display geom" mesh="DisplayMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       <body name="Driver" pos="-0.110493965446949 -1.7881393432617188e-07 -6.332993507385254e-08" quat="0.4999997317790985 0.5 -0.5000003576278687 -0.49999988079071045">
-        <inertial mass="0.40"/>
+        <inertial mass="0.40" pos="-0.110493965446949 -1.7881393432617188e-07 -6.332993507385254e-08"/>
         <geom type="mesh" name="Driver geom" mesh="DriverMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       <body name="Glass" pos="0.0031645542476326227 0.06499987840652466 -1.2293457984924316e-07" quat="0.49999985098838806 -0.5 -0.5 0.5000001192092896">
-        <inertial mass="1.450"/>
+        <inertial mass="1.450" pos="0.0031645542476326227 0.06499987840652466 -1.2293457984924316e-07"/>
         <geom type="mesh" name="Glass geom" mesh="GlassMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       
@@ -32,26 +32,26 @@
       
       
       <body name="Motors" pos="-0.1923355758190155 -5.960464477539063e-08 -5.960464477539062e-07" quat="1.0 -2.98023280720372e-07 2.842170943040401e-14 -5.960463766996327e-08">
-        <inertial mass="2.26"/>
+        <inertial mass="2.26" pos="-0.1923355758190155 -5.960464477539063e-08 -5.960464477539062e-07"/>
         <geom type="mesh" name="Motors geom" mesh="MotorsMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       <body name="MotorSupports" pos="-0.15333551168441772 -1.7881393432617188e-07 0.10749990493059158" quat="0.5000001788139343 -0.5000000596046448 0.4999999403953552 0.49999985098838806" >
         <geom type="mesh" name="MotorSupports geom" mesh="MotorSupportsMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       <body name="STM" pos="-0.13333551585674286 -1.7881393432617188e-07 5.587935447692871e-08" quat="0.4999997913837433 0.5000002384185791 -0.4999997615814209 0.5000001788139343">
-        <inertial mass="0.07"/>
+        <inertial mass="0.07" pos="-0.13333551585674286 -1.7881393432617188e-07 5.587935447692871e-08"/>
         <geom type="mesh" name="STM geom" mesh="STMMesh" rgba="1.0 1.0 1.0 1.0"  />
       </body>
       
-    
+      <!-- Rivedere i momenti di inerzia delle ruote -->
       <body name="WheelL" pos="-0.1923355609178543 0.0 -0.14149940013885498" quat="0.70710688829422 -8.429370268459024e-08 1.1520230458472724e-07 -0.7071066498756409">
-        <inertial mass="0.134"/>
+        <inertial mass="0.134" pos="-0.1923355609178543 0.0 -0.14149940013885498" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="left_wheel_joint" type="hinge" axis="0 0 1" armature="5.3e-05"/>
         <geom type="mesh" name="WheelL geom" mesh="WheelLMesh" rgba="1.0 1.0 1.0 1.0"/>
       </body>
     
       <body name="WheelR" pos="-0.1923356056213379 -1.7881393432617188e-07 0.14149805903434753" quat="0.70710688829422 -8.429370268459024e-08 1.1520230458472724e-07 -0.7071066498756409">
-        <inertial mass="0.134"/>
+        <inertial mass="0.134" pos="-0.1923356056213379 -1.7881393432617188e-07 0.14149805903434753" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="right_wheel_joint" type="hinge" axis="0 0 1" armature="5.3e-05"/>
         <geom type="mesh" name="WheelR geom" mesh="WheelRMesh" rgba="1.0 1.0 1.0 1.0"/>
       </body>

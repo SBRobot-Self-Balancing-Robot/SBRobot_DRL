@@ -47,6 +47,11 @@ class SelfBalancingRobotEnv(gym.Env):
         self.action_space = gym.spaces.Box(low=np.array([-self.action_limit, -self.action_limit]), high=np.array([self.action_limit, self.action_limit]), dtype=np.float64)
         self.max_speed = 8.775 # Maximum wheel speed [rad/s] (84 RPM)
         
+        # Motor control attributes
+        self.int_error = 0.0 # Integral error for speed control
+        self.kp_speed = 0.4 # Proportional gain for speed control
+        self.ki_speed = 0.1 # Integral gain for speed control
+        
         # Initialize the environment attributes
         self.weight_fall_penalty = 100.0 # Penalty for falling
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
@@ -114,13 +119,19 @@ class SelfBalancingRobotEnv(gym.Env):
                 - info (dict): Additional information about the environment.
         """
         # Apply the desired torque to the wheels within the action limits
+        obs = self._get_obs()
         max_torques = self._compute_max_torque()
-        clipped_action = np.clip(action, [-max_torques[0], -max_torques[1]], [max_torques[0], max_torques[1]])
-        self.data.ctrl[:] = clipped_action  # Apply action (torque to the wheels)
+
+        # PI controller for speed control
+        speed_error = action - np.array([self.right_wheel_velocity, self.left_wheel_velocity])
+        self.int_error += speed_error * self.time_step
+        torque = self.kp_speed * speed_error + self.ki_speed * self.int_error
+    
+        clipped_action = np.clip(torque, [-max_torques[0], -max_torques[1]], [max_torques[0], max_torques[1]])
+        self.data.ctrl[:] = clipped_action # Apply action (torque to the wheels)
         
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)  # Step the simulation
-        obs = self._get_obs()
         terminated = self._is_terminated()
         truncated = self._is_truncated()
         
@@ -233,8 +244,8 @@ class SelfBalancingRobotEnv(gym.Env):
         # Quantization according to encoder resolution
         left_pos = np.floor(left_pos / self.encoder_resolution) * self.encoder_resolution
         right_pos = np.floor(right_pos / self.encoder_resolution) * self.encoder_resolution
-
-        # DA IMPLEMENTARE CORRETTAMENTE
+        
+        # Compute wheel angular velocities
         left_speed = (left_pos - self.wheels_position[0]) / self.time_step
         right_speed = (right_pos - self.wheels_position[1]) / self.time_step
         self.wheels_position[0] = left_pos
