@@ -77,7 +77,6 @@ class SelfBalancingRobotEnv(gym.Env):
         
         return obs, 0.0, terminated, truncated, {}
 
-
     def reset(self, seed: T.Optional[int] = None, options: T.Optional[dict] = None) -> T.Tuple[np.ndarray, dict]:
         """
         Reset the environment to an initial state.
@@ -130,6 +129,41 @@ class SelfBalancingRobotEnv(gym.Env):
 
         return self.data.sensordata[accel_adr : accel_adr + 3]
 
+
+    def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:
+        """
+        Simulate noise in the gyroscope data.
+        
+        Args:
+            gyro_data (np.ndarray): The raw gyroscope data.
+        """
+        FS = 131.0              # LSB/(°/s)
+        DEG2RAD = np.pi/180
+        RAD2DEG = 180/np.pi
+        FSR = 250.0             # Full scale range in °/s
+
+        # Full scale conversion
+        gyro_data = np.clip(gyro_data * RAD2DEG, -FSR, FSR)
+
+        # Turn rad/s to raw data
+        gyro_raw = gyro_data * FS
+
+        # Add noise
+        # Sensitivity Scale Factor Tolerance ±3%
+        gyro_raw *= (1 + np.random.uniform(-0.03, 0.03, size=3))
+
+        # Non-linearity ±2%
+        gyro_raw += 0.002 * (gyro_raw ** 2)
+
+        # Cross-axis sensitivity ±2%
+        cross = np.eye(3) + np.random.uniform(-0.02, 0.02, size=(3,3))
+        gyro_raw = cross @ gyro_raw
+
+        # Turn raw data back to rad/s
+        gyro_data_noisy = gyro_raw / FS * DEG2RAD
+
+        return gyro_data_noisy
+
     def _get_robot_angular_velocity(self) -> np.ndarray:
         """
         Get the angular velocity of the robot.
@@ -143,7 +177,10 @@ class SelfBalancingRobotEnv(gym.Env):
         # Address of the gyroscope sensor data
         gyro_adr = self.model.sensor_adr[gyro_id]
 
-        return self.data.sensordata[gyro_adr : gyro_adr + 3]
+        # Get the gyroscope data
+        gyro_data = self._dirty_gyro(self.data.sensordata[gyro_adr : gyro_adr + 3])
+
+        return gyro_data
     
     def _get_body_orientation_angles(self) -> T.Tuple[float, float, float]:
         """
