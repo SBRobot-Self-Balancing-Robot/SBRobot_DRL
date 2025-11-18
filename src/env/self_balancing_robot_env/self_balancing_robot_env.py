@@ -64,7 +64,6 @@ class SelfBalancingRobotEnv(gym.Env):
         self.encoder_resolution = (2 * np.pi)/8192 # Minimum angular change detectable by the wheel encoders [radians]
 
         # Initialize the environment attributes
-        self.weight_fall_penalty = 100.0 # Penalty for falling
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
         self.speed_setpoints = [0.0, 0.0] # Desired speed setpoints
         

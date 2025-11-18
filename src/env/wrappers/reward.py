@@ -27,9 +27,9 @@ class RewardWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         if not terminated and not truncated:
-            reward += 1.0
+            reward += 0.1
         else:
-            reward -= 10.0
+            reward -= 1.0
         
         reward += self.reward_calculator.compute_reward(self.env)
 
@@ -50,7 +50,7 @@ class RewardCalculator:
     """
     Class to compute the reward for the SelfBalancingRobotEnv.
     """
-    def __init__(self, alpha_pitch_penalty = 0.05, alpha_setpoint_angle_penalty = 0.001):
+    def __init__(self, alpha_pitch_penalty = 0.003, alpha_setpoint_angle_penalty = 0.001):
         self.alpha_pitch_penalty = alpha_pitch_penalty
         self.alpha_setpoint_angle_penalty = alpha_setpoint_angle_penalty
 
@@ -67,7 +67,7 @@ class RewardCalculator:
         # Extract necessary state variables from the environment
         # Pitch angle
         quaternion_angles = env.data.qpos[3:7]  # quaternion [w, x, y, z]
-        r = R.from_quat([quaternion_angles[1], quaternion_angles[2], quaternion_angles[3], quaternion_angles[0]]) # Rearrange to [x, y, z, w]
+        r = env.R.from_quat([quaternion_angles[1], quaternion_angles[2], quaternion_angles[3], quaternion_angles[0]]) # Rearrange to [x, y, z, w]
         roll, pitch, yaw = r.as_euler('xyz', degrees=False) # in radians
 
         # Wheel velocities
@@ -75,12 +75,12 @@ class RewardCalculator:
         right_wheel_vel = env.data.qvel[8]
 
         # Setpoint speed error
-        left_setpoint_speed_error  = left_wheel_vel  - env.left_wheel_setpoint_speed
-        right_setpoint_speed_error = right_wheel_vel - env.right_wheel_setpoint_speed
+        left_setpoint_speed_error  = left_wheel_vel  - env.speed_setpoints[0]
+        right_setpoint_speed_error = right_wheel_vel - env.speed_setpoints[1]
 
 
         # Reward composition
-        reward = (
+        reward = 0.9 * (
             0.3 * self._kernel(pitch, self.alpha_pitch_penalty) +
             0.35 * self._kernel(left_setpoint_speed_error, self.alpha_setpoint_angle_penalty) +
             0.35 * self._kernel(right_setpoint_speed_error, self.alpha_setpoint_angle_penalty)
