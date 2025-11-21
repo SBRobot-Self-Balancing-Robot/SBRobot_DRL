@@ -22,7 +22,7 @@ RAD2DEG = 180/(np.pi)         # Radians to degrees conversion factor
 
 class SelfBalancingRobotEnv(gym.Env):
     
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.4, frame_skip: int = 5):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 5):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -45,7 +45,7 @@ class SelfBalancingRobotEnv(gym.Env):
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
 
         # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(5,), dtype=np.float64)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float64)
         # Action space
         # Get the action limit from the model actuators
         ctrl_ranges = self.model.actuator_ctrlrange
@@ -183,7 +183,7 @@ class SelfBalancingRobotEnv(gym.Env):
         # Get the accelerometer data
         accel_data = self._dirty_accel(self.data.sensordata[accel_adr : accel_adr + 3])
 
-        return accel_data
+        return self.data.sensordata[accel_adr : accel_adr + 3]
 
     def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:
         """
@@ -230,7 +230,7 @@ class SelfBalancingRobotEnv(gym.Env):
         # Get the gyroscope data
         gyro_data = self._dirty_gyro(self.data.sensordata[gyro_adr : gyro_adr + 3])
 
-        return gyro_data
+        return self.data.sensordata[gyro_adr : gyro_adr + 3]
     
     def _get_body_orientation_angles(self) -> T.Tuple[float, float, float]:
         """
@@ -332,11 +332,12 @@ class SelfBalancingRobotEnv(gym.Env):
         a_z = self.linear_acceleration[2] / (FSR_ACCEL * g)
 
         return np.array([  
-            pitch,              
-            right_wheel_velocity,
-            left_wheel_velocity,
-            right_wheel_setpoint_error,
-            left_wheel_setpoint_error       
+            pitch,
+            w_y,
+            a_x,
+            a_z,
+            self.wheels_real_velocity[0]/8.775,
+            self.wheels_real_velocity[1]/8.775,      
         ], dtype=np.float64)
     
 
@@ -373,16 +374,13 @@ class SelfBalancingRobotEnv(gym.Env):
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
 
         # Reset position and velocity
-        self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.25]  # Initial position (x, y, z)
+        self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.255]  # Initial position (x, y, z)
         self.data.qvel[:] = 0.0  # Initial speed
 
         # Euler angles: Roll=0, Pitch=random, Yaw=random
         euler = [
-            # 0.0, # Roll
-            # np.random.uniform(-0.4, 0.4), # Pitch
-            # np.random.uniform(-np.pi, np.pi) # Yaw
             0.0, # Roll
-            np.random.uniform(-0.3, 0.3), # Pitch
+            np.random.uniform(-0.05, 0.05), # Pitch
             np.random.uniform(-np.pi, np.pi) # Yaw
         ]
 

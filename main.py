@@ -31,7 +31,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
     # Esegui un passo della simulazione.
     #data  # Esempio di azione: coppie di velocità per le ruote destra e sinistra.
     mujoco.mj_step(model, data)
-    print(f"Velocità ruota destra: {data.qvel[model.joint('right_wheel_joint').id]:.2f} rad/s, Velocità ruota sinistra: {data.qvel[model.joint('left_wheel_joint').id]:.2f} rad/s")
+
+    # Get the wheel positions
+    left_pos = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "left_wheel_vel")]]
+    right_pos = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "right_wheel_vel")]]
+    print(f"Velocità ruota destra: {left_pos:.2f} rad/s, Velocità ruota sinistra: {right_pos:.2f} rad/s")
     # Sincronizza il visualizzatore con i dati di simulazione.
     viewer.sync()
 
