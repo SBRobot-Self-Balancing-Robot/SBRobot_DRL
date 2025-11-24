@@ -30,9 +30,9 @@ class RewardWrapper(gym.Wrapper):
         reward += self.reward_calculator.compute_reward(self.env)
 
         if terminated and not truncated:
-            reward += 0.1  # Small positive reward for continuing
-        else:
-            reward -= 1 # Large negative reward for failure
+            reward += 20  # Small positive reward for continuing
+        elif truncated:
+            reward -= 100 # Large negative reward for failure
 
         return obs, reward, terminated, truncated, info
 

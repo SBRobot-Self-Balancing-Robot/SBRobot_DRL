@@ -1,77 +1,82 @@
 <mujoco>
   <compiler angle="degree" meshdir="./mesh" texturedir="./textures"/>
-  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicit" />
+  <option gravity="0 0 -9.81" integrator="implicit" timestep="0.002" iterations="50" solver="Newton" cone="pyramidal" />
+
   <worldbody>
     <body name="Chassis" pos="0.0018212049035355449 0.0 0.0" quat="1.0 0.0 0.0 0.0">
       <inertial mass="0.70" pos="0.0 0.0 0.0"/>
-      <geom type="mesh" name="Chassis geom" mesh="Cube.033" rgba="1.0 1.0 1.0 1.0" />
+      <geom type="mesh" name="Chassis geom" mesh="Chassis" rgba="1.0 1.0 1.0 1.0" />
       <joint type="free" name="floating_joint"/>
 
       <body name="Battery" pos="-0.04232122004032135 0.0 0.0031644522678107023" quat="1.0 0.0 0.0 0.0">
         <inertial mass="0.59" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="Battery geom" mesh="Cube.008" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Battery geom" mesh="Battery" rgba="1.0 1.0 1.0 1.0" />
       </body>
       <body name="Display" pos="0.05479276552796364 0.0 0.08916442096233368" quat="1.0 0.0 0.0 0.0">
         <inertial mass="0.55" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="Display geom" mesh="Cube.009" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Display geom" mesh="Display" rgba="1.0 1.0 1.0 1.0" />
       </body>
       <body name="Driver" pos="-0.0018212107243016362 0.0 -0.11049394309520721" quat="1.0 0.0 0.0 0.0">
         <inertial mass="0.40" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="Driver geom" mesh="Cube.010" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Driver geom" mesh="Driver" rgba="1.0 1.0 1.0 1.0" />
       </body>
       <body name="Glass" pos="0.012068401090800762 0.0 0.02563333325088024" quat="1.0 0.0 0.0 0.0">
         <inertial mass="1.450" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="Glass geom" mesh="Cube.006" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Glass geom" mesh="Glass" rgba="1.0 1.0 1.0 1.0" />
       </body>
-      
-      
+
+
       <body name="IMU" pos="-0.001821218873374164 0.0 -0.10333554446697235" quat="1.0 0.0 0.0 0.0">
-        <geom type="mesh" name="IMU geom" mesh="Sphere" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="IMU geom" mesh="Sphere" rgba="1.0 1.0 1.0 1.0" />
         <site name="FRAME"/>
       </body>
-      
-      
+
+
       <body name="Motors" pos="-0.0018212789436802268 0.0 -0.19233578443527222" quat="1.0 0.0 0.0 0.0">
         <inertial mass="2.26" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="Motors geom" mesh="Cylinder.003" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Motors geom" mesh="Motors" rgba="1.0 1.0 1.0 1.0" />
       </body>
       <body name="Supports" pos="-0.001821270794607699 0.0 -0.16840942203998566" quat="1.0 0.0 0.0 0.0">
-        <geom type="mesh" name="Supports geom" mesh="mesh87.003" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="Supports geom" mesh="Supports" rgba="1.0 1.0 1.0 1.0" />
       </body>
       <body name="STM" pos="-0.001821214915253222 0.0 -0.12298552691936493" quat="1.0 0.0 0.0 0.0">
         <inertial mass="0.07" pos="0.0 0.0 0.0"/>
-        <geom type="mesh" name="STM geom" mesh="Cube.004" rgba="1.0 1.0 1.0 1.0"  />
+        <geom type="mesh" name="STM geom" mesh="STM" rgba="1.0 1.0 1.0 1.0" />
       </body>
-      
-      <!-- Rivedere i momenti di inerzia delle ruote -->
+
       <body name="WheelL" pos="-0.0017285948852077127 0.1490991711616516 -0.19225578010082245" quat="0.7071067094802856 0.70710688829422 0.0 0.0">
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="left_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
-        <geom type="mesh" name="WheelL geom" mesh="mesh9.001" rgba="1.0 1.0 1.0 1.0"/>
+        <geom type="mesh" name="WheelL geom" mesh="WheelL" rgba="1.0 1.0 1.0 1.0"/>
       </body>
-    
+
       <body name="WheelR" pos="-0.0017284463392570615 -0.14910069108009338 -0.192415252327919" quat="0.7071067094802856 0.70710688829422 0.0 0.0">
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="right_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
-        <geom type="mesh" name="WheelR geom" mesh="mesh9.003" rgba="1.0 1.0 1.0 1.0"/>
+        <geom type="mesh" name="WheelR geom" mesh="WheelR" rgba="1.0 1.0 1.0 1.0"/>
       </body>
-    
+
     </body>
   </worldbody>
 
-<asset>
-  <mesh name="Cube.033" file="Cube.033.obj"/>
-  <mesh name="Cube.008" file="Cube.008.obj"/>
-  <mesh name="Cube.009" file="Cube.009.obj"/>
-  <mesh name="Cube.010" file="Cube.010.obj"/>
-  <mesh name="Cube.006" file="Cube.006.obj"/>
-  <mesh name="Sphere" file="Sphere.obj"/>
-  <mesh name="mesh9.001" file="mesh9.001.obj"/>
-  <mesh name="Cylinder.003" file="Cylinder.003.obj"/>
-  <mesh name="mesh9.003" file="mesh9.003.obj"/>
-  <mesh name="Cube.004" file="Cube.004.obj"/>
-  <mesh name="mesh87.003" file="mesh87.003.obj"/>
-</asset>
+  <contact>
+    <exclude body1="Chassis" body2="WheelL"/>
+    <exclude body1="Chassis" body2="WheelR"/>
+  </contact>
+
+  <asset>
+    <mesh name="Chassis" file="Chassis.obj"/>
+    <mesh name="Battery" file="Battery.obj"/>
+    <mesh name="Display" file="Display.obj"/>
+    <mesh name="Driver" file="Driver.obj"/>
+    <mesh name="Glass" file="Glass.obj"/>
+    <mesh name="Sphere" file="Sphere.obj"/>
+    <mesh name="WheelL" file="WheelL.obj"/>
+    <mesh name="Motors" file="Motors.obj"/>
+    <mesh name="WheelR" file="WheelR.obj"/>
+    <mesh name="STM" file="STM.obj"/>
+    <mesh name="Supports" file="Supports.obj"/>
+  </asset>
 
   <actuator>
     <velocity name="left_motor" joint="left_wheel_joint"
@@ -83,16 +88,18 @@
     <velocity name="right_motor" joint="right_wheel_joint"
               ctrlrange = "-8.775 8.775"
               forcerange = "-2.5 2.5"
-              kv = "20"
+              kv = "25"
               ctrllimited = "true"
               forcelimited = "true"/>
   </actuator>
 
   <sensor>
     <!--  Indices 0, 1, 2-->
-    <accelerometer noise="0.0" site="FRAME" name="accelerometer"/> <!-- 0.04 m/s^2 -->
+    <accelerometer noise="0.0" site="FRAME" name="accelerometer"/>
+    <!-- 0.04 m/s^2 -->
     <!-- Indices 3, 4, 5 -->
-    <gyro noise="0.0" site="FRAME" name="gyroscope"/> <!-- 0.05 °/s -> 0.00175 rad/s -->
+    <gyro noise="0.0" site="FRAME" name="gyroscope"/>
+    <!-- 0.05 °/s -> 0.00175 rad/s -->
     <!-- Indices 6, 7 -->
     <jointpos name="left_wheel_pos" joint="left_wheel_joint"/>
     <jointpos name="right_wheel_pos" joint="right_wheel_joint"/>
