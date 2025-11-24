@@ -1,0 +1,11 @@
+.idea/
+/venv
+__pycache__/
+policies/
+recordings/
+wandb/
+wandb/*.log
+wandb/latest-run
+*.txt
+*.TXT
+*.log
