@@ -21,7 +21,6 @@ DEG2RAD = (np.pi)/180         # Degrees to radians conversion factor
 RAD2DEG = 180/(np.pi)         # Radians to degrees conversion factor
 
 class SelfBalancingRobotEnv(gym.Env):
-    
     def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 5):
         """
         Initialize the SelfBalancingRobot environment.
@@ -32,25 +31,24 @@ class SelfBalancingRobotEnv(gym.Env):
             max_pitch (float): Maximum pitch angle before truncation.
             frame_skip (int): Number of frames to skip in each step.
         """
-        # Initialize the environment
         super().__init__()
         self.viewer = None
         full_path = os.path.abspath(environment_path)
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Model file not found: {full_path}")
+        
         self.model = MjModel.from_xml_path(full_path)
         self.data = MjData(self.model)
-        self.max_time = max_time # Maximum time for the episode
-        self.frame_skip = frame_skip # Number of frames to skip in each step  
+        self.max_time = max_time        # Maximum time for the episode
+        self.frame_skip = frame_skip    # Number of frames to skip in each step  
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
 
         # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float64)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float64)
+        
         # Action space
-        # Get the action limit from the model actuators
         ctrl_ranges = self.model.actuator_ctrlrange
 
-        # Build Gym Box from these ranges
         self.low  = ctrl_ranges[:, 0]
         self.high = ctrl_ranges[:, 1]
 
@@ -59,13 +57,14 @@ class SelfBalancingRobotEnv(gym.Env):
             high=self.high,
             dtype=np.float32
         )
+        
         # Sensor parameters:
         self.accel_calib_scale = 0.0 # Accelerometer calibration scale factor
         self.encoder_resolution = (2 * np.pi)/8192 # Minimum angular change detectable by the wheel encoders [radians]
 
         # Initialize the environment attributes
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
-        self.speed_setpoints = [0.0, 0.0] # Desired speed setpoints
+        self.setpoint = [0.0, 0.0] # [velocity_setpoint, angular_velocity_setpoint (steering)]
         
         # Initialize observation values
         self.roll, self.pitch, self.yaw = 0.0, 0.0, 0.0 # Orientation angles of the robot [roll, pitch, yaw]
@@ -117,7 +116,6 @@ class SelfBalancingRobotEnv(gym.Env):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
-        # info = self._get_info()
         obs = self._get_obs()
         return obs, {}
     
@@ -134,38 +132,7 @@ class SelfBalancingRobotEnv(gym.Env):
             self.viewer.sync()
             time.sleep(self.model.opt.timestep * self.frame_skip)  # Sleep for the duration of the frame skip
         else:
-            raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")
-
-
-    def _dirty_accel(self, accel_data: np.ndarray) -> np.ndarray:
-        """
-        Simulate noise in the accelerometer data.
-        
-        Args:
-            accel_data (np.ndarray): The raw accelerometer data.
-        """
-        
-        # Full scale conversion
-        accel_data = np.clip(accel_data / g, -FSR_ACCEL, FSR_ACCEL)
-
-        # Turn g to raw data
-        accel_raw = accel_data * FS_ACCEL
-
-        # Add noise
-        # Initial Calibration Tolerance ±3%
-        accel_raw *= self.accel_calib_scale
-
-        # Non-linearity ±0.5%
-        accel_raw += 0.005 * (accel_raw ** 2)
-
-        # Cross-axis sensitivity ±2%
-        cross = np.eye(3) + np.random.uniform(-0.02, 0.02, size=(3,3))
-        accel_raw = cross @ accel_raw
-
-        # Turn raw data back to g
-        accel_data_noisy = accel_raw / FS_ACCEL * g
-
-        return accel_data_noisy
+            raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")    
 
     def _get_body_linear_acceleration(self) -> np.ndarray:
         """
@@ -184,35 +151,6 @@ class SelfBalancingRobotEnv(gym.Env):
         accel_data = self._dirty_accel(self.data.sensordata[accel_adr : accel_adr + 3])
 
         return self.data.sensordata[accel_adr : accel_adr + 3]
-
-    def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:
-        """
-        Simulate noise in the gyroscope data.
-        
-        Args:
-            gyro_data (np.ndarray): The raw gyroscope data.
-        """
-        # Full scale conversion
-        gyro_data = np.clip(gyro_data * RAD2DEG, -FSR_GYRO, FSR_GYRO)
-
-        # Turn °/s to raw data
-        gyro_raw = gyro_data * FS_GYRO
-
-        # Add noise
-        # Sensitivity Scale Factor Tolerance ±3%
-        gyro_raw *= (1 + np.random.uniform(-0.03, 0.03, size=3))
-
-        # Non-linearity ±0.2%
-        gyro_raw += 0.002 * (gyro_raw ** 2)
-
-        # Cross-axis sensitivity ±2%
-        cross = np.eye(3) + np.random.uniform(-0.02, 0.02, size=(3,3))
-        gyro_raw = cross @ gyro_raw
-
-        # Turn raw data back to rad/s
-        gyro_data_noisy = gyro_raw / FS_GYRO * DEG2RAD 
-
-        return gyro_data_noisy
 
     def _get_robot_angular_velocity(self) -> np.ndarray:
         """
@@ -299,51 +237,79 @@ class SelfBalancingRobotEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         """
         Get the current observation of the environment.
-        
+       
         Returns:
-            np.ndarray: The observation vector.
-            
-            Ho mantenuto l'output di 7 elementi, che ora include:
-            [pitch, roll, yaw, linear_acceleration_x, linear_acceleration_y, angular_velocity_x, angular_velocity_y]
-        """
-        # Update wheel velocities for reward calculation
+            np.ndarray: The observation vector containing normalized sensor data and setpoints.
+            - pitch
+            - angular_velocity_y (pitch rate)
+            - linear_acceleration_x
+            - linear_acceleration_z
+            - left_wheel_velocity
+            - right_wheel_velocity
+            - angular_velocity_z (yaw rate)
+            - setpoint linear velocity
+            - setpoint angular velocity (steering) 
+       """
+        # --- 1. Get sensors data ---
         self.wheels_real_velocity = self._get_wheels_real_angular_velocity()
-
-        # Update sensor readings
         self.linear_acceleration = self._get_body_linear_acceleration()
         self.angular_velocity = self._get_robot_angular_velocity()
         self.pitch, self.roll, self.yaw = self._get_body_orientation_angles()
-        left_wheel_velocity, right_wheel_velocity = self._get_wheels_angular_velocity()
-
-        # Compute setpoint errors
-        left_wheel_setpoint_error = self.speed_setpoints[0] - left_wheel_velocity
-        right_wheel_setpoint_error = self.speed_setpoints[1] - right_wheel_velocity
         
-        # Data normalization
-        pitch = self.pitch / (np.pi/2)
-
-        right_wheel_velocity /= 8.775
-        left_wheel_velocity /= 8.775
-        right_wheel_setpoint_error /= 8.775
-        left_wheel_setpoint_error /= 8.775
+        # --- 2. Normalize sensor data ---
+        # Constants (make sure they are defined in the class or globally)
+        # Get the max wheel speed from the model
+        try:
+            wheel_geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "right_wheel_geom")
+        except AttributeError:
+        # Fallback per vecchie versioni (mujoco-py)
+            wheel_geom_id = self.model.geom_name2id("right_wheel_geom")
+        WHEEL_RADIUS = self.model.geom_size[wheel_geom_id][0]  # Assuming both wheels have the same max speed
+        # Get the radius of the wheels from the model
+        actuator_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
+        MAX_WHEEL_SPEED = self.model.actuator_ctrlrange[actuator_id][1]
+        # Pitch: Normalized over 90 degrees (pi/2)
+        norm_pitch = self.pitch / (np.pi/2)
         
-        w_y = self.angular_velocity[1] / (FSR_GYRO * DEG2RAD)
-        a_x = self.linear_acceleration[0] / (FSR_ACCEL * g)
-        a_z = self.linear_acceleration[2] / (FSR_ACCEL * g)
+        # Angular Velocities (Gyro): Normalized over Full Scale Range (FSR)
+        norm_w_y = self.angular_velocity[1] / (FSR_GYRO * DEG2RAD) # Pitch rate
+        norm_w_z = self.angular_velocity[2] / (FSR_GYRO * DEG2RAD) # Yaw rate (real)
 
+        # Acceleration: Normalized over FSR
+        norm_a_x = self.linear_acceleration[0] / (FSR_ACCEL * g)
+        norm_a_z = self.linear_acceleration[2] / (FSR_ACCEL * g)
+
+        # Wheel Speeds: Normalized over maximum speed
+        norm_wheel_vel_left = self.wheels_real_velocity[0] / MAX_WHEEL_SPEED
+        norm_wheel_vel_right = self.wheels_real_velocity[1] / MAX_WHEEL_SPEED
+
+        # --- 3. Normalize COMMANDS (TARGET) ---
+        # Using self.setpoint = [vel, dir]
+        
+        # A. Target Linear Velocity (self.setpoint[0]) in m/s
+        # Convert it to "rad/s at the wheels" to make it comparable with norm_wheel_vel_left/right
+        target_wheel_omega = self.setpoint[0] / WHEEL_RADIUS
+        norm_target_lin = target_wheel_omega / MAX_WHEEL_SPEED
+
+        # B. Target Steering (self.setpoint[1]) in rad/s
+        # Normalize it with the same factor as the gyroscope (Z axis), to compare it with norm_w_z
+        norm_target_ang = self.setpoint[1] / (FSR_GYRO * DEG2RAD)
+
+        # --- 4. Construct Observation Vector (Dimension 9) ---
         return np.array([  
-            pitch,
-            w_y,
-            a_x,
-            a_z,
-            self.wheels_real_velocity[0]/8.775,
-            self.wheels_real_velocity[1]/8.775,      
+            norm_pitch,           # 1. Balance State
+            norm_w_y,             # 2. Pitch Dynamics
+            norm_a_x,             # 3. Accel X
+            norm_a_z,             # 4. Accel Z
+            norm_wheel_vel_left,  # 5. Left Actuator State
+            norm_wheel_vel_right, # 6. Right Actuator State
+            norm_w_z,             # 7. Yaw Dynamics
+            norm_target_lin,      # 8. SETPOINT: Velocity
+            norm_target_ang       # 9. SETPOINT: Direction
         ], dtype=np.float64)
-    
 
-    def _get_info(self):
-        return {}
 
+    # Environment termination and truncation conditions and initialization
     def _is_terminated(self) -> bool:
         """
         Check if the episode is terminated.
@@ -368,7 +334,6 @@ class SelfBalancingRobotEnv(gym.Env):
             abs(pitch) > self.max_pitch
             )
 
-
     def _initialize_random_state(self):
         # Initialize accelerometer initial calibration scale
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
@@ -389,3 +354,67 @@ class SelfBalancingRobotEnv(gym.Env):
         # Euler → Quaternion [x, y, z, w]
         quat_xyzw = R.from_euler('xyz', euler).as_quat()
         self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
+   
+    # Function not used  
+    def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:
+            """
+            Simulate noise in the gyroscope data.
+            
+            Args:
+                gyro_data (np.ndarray): The raw gyroscope data.
+            """
+            # Full scale conversion
+            gyro_data = np.clip(gyro_data * RAD2DEG, -FSR_GYRO, FSR_GYRO)
+
+            # Turn °/s to raw data
+            gyro_raw = gyro_data * FS_GYRO
+
+            # Add noise
+            # Sensitivity Scale Factor Tolerance ±3%
+            gyro_raw *= (1 + np.random.uniform(-0.03, 0.03, size=3))
+
+            # Non-linearity ±0.2%
+            gyro_raw += 0.002 * (gyro_raw ** 2)
+
+            # Cross-axis sensitivity ±2%
+            cross = np.eye(3) + np.random.uniform(-0.02, 0.02, size=(3,3))
+            gyro_raw = cross @ gyro_raw
+
+            # Turn raw data back to rad/s
+            gyro_data_noisy = gyro_raw / FS_GYRO * DEG2RAD 
+
+            return gyro_data_noisy
+    
+    def _dirty_accel(self, accel_data: np.ndarray) -> np.ndarray:
+        """
+        Simulate noise in the accelerometer data.
+        
+        Args:
+            accel_data (np.ndarray): The raw accelerometer data.
+        """
+        
+        # Full scale conversion
+        accel_data = np.clip(accel_data / g, -FSR_ACCEL, FSR_ACCEL)
+
+        # Turn g to raw data
+        accel_raw = accel_data * FS_ACCEL
+
+        # Add noise
+        # Initial Calibration Tolerance ±3%
+        accel_raw *= self.accel_calib_scale
+
+        # Non-linearity ±0.5%
+        accel_raw += 0.005 * (accel_raw ** 2)
+
+        # Cross-axis sensitivity ±2%
+        cross = np.eye(3) + np.random.uniform(-0.02, 0.02, size=(3,3))
+        accel_raw = cross @ accel_raw
+
+        # Turn raw data back to g
+        accel_data_noisy = accel_raw / FS_ACCEL * g
+
+        return accel_data_noisy
+      
+     
+     
+        

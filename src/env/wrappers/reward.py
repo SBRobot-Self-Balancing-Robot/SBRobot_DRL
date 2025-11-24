@@ -66,18 +66,21 @@ class RewardCalculator:
           - env.data.qpos[:2] per la posizione (x,y)
         """
         # Extract necessary state variables from the environment
-        # Pitch angle
+        
         quaternion_angles = env.data.qpos[3:7]  # quaternion [w, x, y, z]
         r = R.from_quat([quaternion_angles[1], quaternion_angles[2], quaternion_angles[3], quaternion_angles[0]]) # Rearrange to [x, y, z, w]
         roll, pitch, yaw = r.as_euler('xyz', degrees=False) # in radians
+            
+        
+        
 
         # Wheel velocities
         left_wheel_vel  = env.wheels_real_velocity[0]
         right_wheel_vel = env.wheels_real_velocity[1]
 
         # Setpoint speed error
-        left_setpoint_speed_error  = left_wheel_vel  - env.speed_setpoints[0]
-        right_setpoint_speed_error = right_wheel_vel - env.speed_setpoints[1]
+        left_setpoint_speed_error  = left_wheel_vel  - env.setpoint[0]
+        right_setpoint_speed_error = right_wheel_vel - env.setpoint[0]
 
 
         # Reward composition
@@ -88,6 +91,16 @@ class RewardCalculator:
         )
 
         return float(reward)
+
+
+    def _get_wheel_speeds(self, env) -> T.Tuple[float, float]:
+        """
+        Get the real wheel speeds from the environment.
+        
+        Args:
+            env: The environment instance.
+        """
+        
 
     def _kernel(self, x: float, alpha: float) -> float:
         """
