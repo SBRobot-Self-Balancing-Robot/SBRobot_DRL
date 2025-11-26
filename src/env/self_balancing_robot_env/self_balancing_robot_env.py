@@ -7,6 +7,7 @@ import mujoco
 import numpy as np
 import typing as T
 import gymnasium as gym
+from ahrs.filters import Madgwick
 from mujoco import MjModel, MjData
 from mujoco.viewer import launch_passive
 from scipy.spatial.transform import Rotation as R
@@ -65,6 +66,9 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialize the environment attributes
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
         self.setpoint = [0.0, 0.0] # [velocity_setpoint, angular_velocity_setpoint (steering)]
+        
+        # Madgwick filter for orientation estimation
+        self.madgwick = Madgwick(frequency=1.0/self.time_step, beta=0.033)
         
         # Initialize observation values
         self.roll, self.pitch, self.yaw = 0.0, 0.0, 0.0 # Orientation angles of the robot [roll, pitch, yaw]
@@ -184,10 +188,32 @@ class SelfBalancingRobotEnv(gym.Env):
             T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the robot's body.
         """
         # Complementary filter to estimate pitch angle
-        pitch = 0.996 * (self.pitch + self.angular_velocity[1] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[0], self.linear_acceleration[2])
-        roll = 0.996 * (self.roll + self.angular_velocity[0] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[1], self.linear_acceleration[2])
-        yaw =  self.yaw + self.angular_velocity[2] * self.time_step 
+        # pitch = 0.996 * (self.pitch + self.angular_velocity[1] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[0], self.linear_acceleration[2])
+        # roll = 0.996 * (self.roll + self.angular_velocity[0] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[1], self.linear_acceleration[2])
+        # yaw =  self.yaw + self.angular_velocity[2] * self.time_step 
         
+        # return pitch, roll, yaw
+        # 1. Update the Quaternion State
+        # The filter calculates the NEW quaternion based on the OLD quaternion + Sensor Data
+        self.Q = self.madgwick.updateIMU(
+            self.Q, 
+            gyr=self.angular_velocity,     # Gyro [x, y, z] in rad/s
+            acc=self.linear_acceleration   # Accel [x, y, z] in m/s^2 or g
+        )
+
+        # 2. Convert Quaternion to Euler
+        # AHRS uses [w, x, y, z], Scipy uses [x, y, z, w] -> We must reorder
+        r = R.from_quat([self.Q[1], self.Q[2], self.Q[3], self.Q[0]])
+        
+        # Get angles (standard aerospace sequence is usually 'xyz' -> roll, pitch, yaw)
+        roll, pitch, yaw = r.as_euler('xyz', degrees=False)
+        
+        # 3. Update legacy class attributes (Optional, only if other parts of your code read these directly)
+        self.roll = roll
+        self.pitch = pitch
+        self.yaw = yaw
+
+        # 4. Return in the SPECIFIC order your previous function defined: (Pitch, Roll, Yaw)
         return pitch, roll, yaw
     
     def _get_wheels_angular_velocity(self) -> T.Tuple[float, float]:
@@ -260,10 +286,10 @@ class SelfBalancingRobotEnv(gym.Env):
         self.wheels_real_velocity = self._get_wheels_real_angular_velocity()
         self.linear_acceleration = self._get_body_linear_acceleration()
         self.angular_velocity = self._get_robot_angular_velocity()
-        #self.pitch, self.roll, self.yaw = self._get_body_orientation_angles() DA SISTEMARE
-        quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
-        self.roll, self.pitch, self.yaw = r.as_euler('xyz', degrees=False) # in radians
+        self.pitch, self.roll, self.yaw = self._get_body_orientation_angles()
+        # quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
+        # r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
+        # self.roll, self.pitch, self.yaw = r.as_euler('xyz', degrees=False) # in radians
         
         # --- 2. Normalize sensor data ---
         # Constants (make sure they are defined in the class or globally)
@@ -377,16 +403,17 @@ class SelfBalancingRobotEnv(gym.Env):
             0.0, # Pitch
             np.random.uniform(-np.pi, np.pi) # Yaw
         ]
-
-        # Create a function to give a random direction to follow (evaluate also the velocity)
-        
-        # Euler → Quaternion [x, y, z, w]
+        # Euler → Quaternion [x, y, z, w] (Scipy convention)
         quat_xyzw = R.from_euler('xyz', euler).as_quat()
+
         self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
 
         self.past_pitch = 0.0
         self.past_wz = 0.0
         self.past_wx = 0.0
+        
+        self.Q = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+        
         self.past_ctrl = np.array([0.0, 0.0])
 
    
