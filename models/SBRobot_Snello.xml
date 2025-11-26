@@ -47,31 +47,15 @@
       <body name="WheelL" pos="-0.0017285948852077127 0.1490991711616516 -0.19225578010082245" quat="0.7071067094802856 0.70710688829422 0.0 0.0">
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="left_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
-            <!-- VISUAL ONLY -->
-            <geom type="mesh" name="WheelL_visual" mesh="WheelL" rgba="1 1 1 1"
-                  contype="0" conaffinity="0"/>
-
-            <!-- COLLISION: CYLINDER -->
-            <geom type="cylinder" name="WheelL_collision"
-                  pos="0 0 0"
-                  size="0.0625 0.012" 
-                  rgba="0.8 0.2 0.2 0.3"
-                  friction="0.8 0.05 0.002"/>
+        <geom type="mesh" name="WheelL_visual" mesh="WheelL" rgba="1 1 1 1" contype="0" conaffinity="0"/>
+        <geom type="ellipsoid" name="WheelL_collision" pos="0 0 0" size="0.0625 0.0625 0.012" rgba="0.8 0.2 0.2 0.3" friction="0.8 0.05 0.002"/>
       </body>
 
       <body name="WheelR" pos="-0.0017284463392570615 -0.14910069108009338 -0.192415252327919" quat="0.7071067094802856 0.70710688829422 0.0 0.0">
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="right_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
-            <!-- VISUAL ONLY -->
-            <geom type="mesh" name="WheelR_visual" mesh="WheelR" rgba="1 1 1 1"
-                  contype="0" conaffinity="0"/>
-
-            <!-- COLLISION: CYLINDER -->
-            <geom type="cylinder" name="WheelR_collision"
-                  pos="0 0 0"
-                  size="0.0625 0.012" 
-                  rgba="0.8 0.2 0.2 0.3"
-                  friction="1.0 0.075 0.002"/>
+        <geom type="mesh" name="WheelR_visual" mesh="WheelR" rgba="1 1 1 1" contype="0" conaffinity="0"/>
+        <geom type="ellipsoid" name="WheelR_collision" pos="0 0 0" size="0.0625 0.0625 0.012" rgba="0.8 0.2 0.2 0.3" friction="1.0 0.075 0.002"/>
       </body>
 
     </body>
@@ -97,25 +81,17 @@
   </asset>
 
   <actuator>
-    <velocity name="left_motor" joint="left_wheel_joint"
-              ctrlrange="-8.775 8.775"
-              forcerange="-2.5 2.5"
-              kv="20"
-              ctrllimited="true"
-              forcelimited="true"/>
-    <velocity name="right_motor" joint="right_wheel_joint"
-              ctrlrange="-8.775 8.775"
-              forcerange="-2.5 2.5"
-              kv="20"
-              ctrllimited="true"
-              forcelimited="true"/>
+    <velocity name="left_motor" joint="left_wheel_joint" ctrlrange="-8.775 8.775" forcerange="-2.5 2.5" kv="10" ctrllimited="true" forcelimited="true"/>
+    <velocity name="right_motor" joint="right_wheel_joint" ctrlrange="-8.775 8.775" forcerange="-2.5 2.5" kv="10" ctrllimited="true" forcelimited="true"/>
   </actuator>
 
   <sensor>
     <!--  Indices 0, 1, 2-->
-    <accelerometer noise="0.0" site="FRAME" name="accelerometer"/> <!-- 0.04 m/s^2 -->
+    <accelerometer noise="0.0" site="FRAME" name="accelerometer"/>
+    <!-- 0.04 m/s^2 -->
     <!-- Indices 3, 4, 5 -->
-    <gyro noise="0.0" site="FRAME" name="gyroscope"/> <!-- 0.05 °/s -> 0.00175 rad/s -->
+    <gyro noise="0.0" site="FRAME" name="gyroscope"/>
+    <!-- 0.05 °/s -> 0.00175 rad/s -->
     <!-- Indices 6, 7 -->
     <jointpos name="left_wheel_pos" joint="left_wheel_joint"/>
     <jointpos name="right_wheel_pos" joint="right_wheel_joint"/>

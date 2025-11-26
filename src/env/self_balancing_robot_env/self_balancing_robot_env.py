@@ -44,11 +44,11 @@ class SelfBalancingRobotEnv(gym.Env):
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
 
         # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float64)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
         
         # Action space
         ctrl_ranges = self.model.actuator_ctrlrange
-
+        
         self.low  = ctrl_ranges[:, 0]
         self.high = ctrl_ranges[:, 1]
 
@@ -297,8 +297,6 @@ class SelfBalancingRobotEnv(gym.Env):
         # Normalize it with the same factor as the gyroscope (Z axis), to compare it with norm_w_z
         norm_target_ang = self.setpoint[1] / (FSR_GYRO * DEG2RAD)
 
-        
-
         # --- 4. Construct Observation Vector (Dimension 9) ---
         return np.array([  
             norm_pitch,             # 1. Balance State
@@ -312,7 +310,7 @@ class SelfBalancingRobotEnv(gym.Env):
             self.data.ctrl[1],      # 9. Right Motor Command 
 #            norm_target_lin,      # 8. SETPOINT: Velocity
 #            norm_target_ang       # 9. SETPOINT: Direction
-        ], dtype=np.float64)
+        ], dtype=np.float32)
 
 
     # Environment termination and truncation conditions and initialization

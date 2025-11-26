@@ -32,7 +32,7 @@ class RewardWrapper(gym.Wrapper):
         if terminated and not truncated:
             reward += 10 
         elif truncated:
-            reward -= 200 * (1 - (self.env.data.time / self.env.max_time))
+            reward -= 200 * (2 - (self.env.data.time / self.env.max_time))
 
         return obs, reward, terminated, truncated, info
 
@@ -94,8 +94,8 @@ class RewardCalculator:
 
         # Reward composition
         reward = (
-            (0.7 * self._kernel(pitch, self.alpha_pitch_penalty) +
-            0.3 * self._kernel(pitch, self.alpha_pitch_penalty * 100)) -
+            (0.8 * self._kernel(pitch, self.alpha_pitch_penalty) +
+            0.2 * self._kernel(pitch, self.alpha_pitch_penalty * 100)) + 
             self._kernel(ctrl_variation[0], 0.2) *
             self._kernel(ctrl_variation[1], 0.2)            
             # - np.linalg.norm(env.data.ctrl) * 0.1 
@@ -104,7 +104,7 @@ class RewardCalculator:
         )
 
         self.past_ctrl = env.data.ctrl.copy()
-
+        reward = reward * (1 + env.data.time / env.max_time)
         return float(reward)
 
 
