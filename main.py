@@ -2,6 +2,7 @@ import mujoco
 import mujoco.viewer
 import time
 import os
+import numpy as np
 
 # Il file XML della scena che include il robot e l'ambiente.
 xml_file = './models/scene.xml'
@@ -23,6 +24,7 @@ data = mujoco.MjData(model)
 
 # Lancia il visualizzatore passivo.
 print("Avvio del visualizzatore MuJoCo. Chiudere la finestra per terminare.")
+pitch = 0.0
 with mujoco.viewer.launch_passive(model, data) as viewer:
   # Ciclo di simulazione principale.
   while viewer.is_running():
@@ -33,9 +35,10 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
     mujoco.mj_step(model, data)
 
     # Get the wheel positions
-    left_pos = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "left_wheel_vel")]]
-    right_pos = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "right_wheel_vel")]]
-    print(f"Velocità ruota destra: {left_pos:.2f} rad/s, Velocità ruota sinistra: {right_pos:.2f} rad/s")
+    accell = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "accelerometer") : model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "accelerometer")] + 3]]
+    gyro = data.sensordata[model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "gyroscope") : model.sensor_adr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "gyroscope")] + 3]]
+    pitch = 0.996 * (pitch + gyro[1] * model.opt.timestep) - 0.004 * np.arctan2(accell[0], accell[2])
+    print(f"angolo: {pitch:.2f} rad")
     # Sincronizza il visualizzatore con i dati di simulazione.
     viewer.sync()
 

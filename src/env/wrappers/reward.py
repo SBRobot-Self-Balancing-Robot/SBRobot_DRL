@@ -32,7 +32,7 @@ class RewardWrapper(gym.Wrapper):
         if terminated and not truncated:
             reward += 10 
         elif truncated:
-            reward -= 200 * (2 - (self.env.data.time / self.env.max_time))
+            reward -= 100 * (1 - (self.env.data.time / self.env.max_time))
 
         return obs, reward, terminated, truncated, info
 
@@ -89,32 +89,21 @@ class RewardCalculator:
         right_setpoint_speed_error = right_wheel_vel - env.setpoint[0]
 
         # Ctrl variation
-        ctrl_variation = env.data.ctrl - self.past_ctrl
+        ctrl_variation = env.data.ctrl - env.past_ctrl
 
 
         # Reward composition
         reward = (
-            (0.8 * self._kernel(pitch, self.alpha_pitch_penalty) +
-            0.2 * self._kernel(pitch, self.alpha_pitch_penalty * 100)) + 
-            self._kernel(ctrl_variation[0], 0.2) *
-            self._kernel(ctrl_variation[1], 0.2)            
-            # - np.linalg.norm(env.data.ctrl) * 0.1 
+            abs(pitch) / (np.pi/2) * 
+            abs(angular_velocity_z) / (150 * np.pi / 180) *
+            abs(np.linalg.norm(ctrl_variation / 8.775)) * 
+            abs(np.linalg.norm(env.data.ctrl) / 8.775) 
             #- left_wheel_vel * 0.5 +
             #- right_wheel_vel * 0.5
-        )
+        ) * (1 + (env.data.time / env.max_time))
 
-        self.past_ctrl = env.data.ctrl.copy()
-        reward = reward * (1 + env.data.time / env.max_time)
         return float(reward)
 
-
-    def _get_wheel_speeds(self, env) -> T.Tuple[float, float]:
-        """
-        Get the real wheel speeds from the environment.
-        
-        Args:
-            env: The environment instance.
-        """
         
 
     def _kernel(self, x: float, alpha: float) -> float:

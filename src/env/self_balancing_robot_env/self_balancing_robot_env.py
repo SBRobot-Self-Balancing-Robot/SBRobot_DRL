@@ -21,7 +21,7 @@ DEG2RAD = (np.pi)/180         # Degrees to radians conversion factor
 RAD2DEG = 180/(np.pi)         # Radians to degrees conversion factor
 
 class SelfBalancingRobotEnv(gym.Env):
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.8, frame_skip: int = 10):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.5, frame_skip: int = 10):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -44,7 +44,7 @@ class SelfBalancingRobotEnv(gym.Env):
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
 
         # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32)
         
         # Action space
         ctrl_ranges = self.model.actuator_ctrlrange
@@ -71,7 +71,12 @@ class SelfBalancingRobotEnv(gym.Env):
         self.linear_acceleration = np.zeros(3) # Linear acceleration of the robot [gyro_x, gyro_y, gyro_z]
         self.angular_velocity = np.zeros(3) # Angular velocity of the robot [angular_velocity_x, angular_velocity_y, angular_velocity_z]
         self.wheels_position = np.zeros(2) # Angular position of the wheels [wheel_left_position, wheel_right_position]
-        self.wheels_real_velocity = np.zeros(2) # Ideal angular velocity of the wheels [wheel_left_velocity, wheel_right_velocity]
+        self.wheels_real_velocity = np.zeros(2) # Ideal angular velocity of the wheels [wheel_left_velocity, wheel_right_velocity]z
+
+        self.past_pitch = 0.0
+        self.past_wz = 0.0
+        self.past_wx = 0.0
+        self.past_ctrl = np.array([0.0, 0.0])
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
         """
@@ -181,7 +186,7 @@ class SelfBalancingRobotEnv(gym.Env):
         # Complementary filter to estimate pitch angle
         pitch = 0.996 * (self.pitch + self.angular_velocity[1] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[0], self.linear_acceleration[2])
         roll = 0.996 * (self.roll + self.angular_velocity[0] * self.time_step) - 0.004 * np.arctan2(self.linear_acceleration[1], self.linear_acceleration[2])
-        yaw =  self.yaw + self.angular_velocity[2] * self.time_step
+        yaw =  self.yaw + self.angular_velocity[2] * self.time_step 
         
         return pitch, roll, yaw
     
@@ -255,7 +260,10 @@ class SelfBalancingRobotEnv(gym.Env):
         self.wheels_real_velocity = self._get_wheels_real_angular_velocity()
         self.linear_acceleration = self._get_body_linear_acceleration()
         self.angular_velocity = self._get_robot_angular_velocity()
-        self.pitch, self.roll, self.yaw = self._get_body_orientation_angles()
+        #self.pitch, self.roll, self.yaw = self._get_body_orientation_angles() DA SISTEMARE
+        quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
+        self.roll, self.pitch, self.yaw = r.as_euler('xyz', degrees=False) # in radians
         
         # --- 2. Normalize sensor data ---
         # Constants (make sure they are defined in the class or globally)
@@ -274,6 +282,7 @@ class SelfBalancingRobotEnv(gym.Env):
         norm_pitch = self.pitch / (np.pi/2)
         
         # Angular Velocities (Gyro): Normalized over Full Scale Range (FSR)
+        norm_w_x = self.angular_velocity[0] / (FSR_GYRO * DEG2RAD) # Roll rate
         norm_w_y = self.angular_velocity[1] / (FSR_GYRO * DEG2RAD) # Pitch rate
         norm_w_z = self.angular_velocity[2] / (FSR_GYRO * DEG2RAD) # Yaw rate (real)
 
@@ -297,21 +306,34 @@ class SelfBalancingRobotEnv(gym.Env):
         # Normalize it with the same factor as the gyroscope (Z axis), to compare it with norm_w_z
         norm_target_ang = self.setpoint[1] / (FSR_GYRO * DEG2RAD)
 
-        # --- 4. Construct Observation Vector (Dimension 9) ---
-        return np.array([  
+        # Normalize past values
+        norm_past_pitch = self.past_pitch / (np.pi/2)
+        norm_past_wz = self.past_wz / (FSR_GYRO * DEG2RAD)
+        norm_past_wx = self.past_wx / (FSR_GYRO * DEG2RAD)
+
+        # --- 4. Construct Observation Vector ---
+        obsv  = np.array([  
             norm_pitch,             # 1. Balance State
-            norm_w_y,               # 2. Pitch Dynamics
-            norm_a_x,               # 3. Accel X
-            norm_a_z,               # 4. Accel Z
-            norm_wheel_vel_left,    # 5. Left Actuator State
-            norm_wheel_vel_right,   # 6. Right Actuator State
-            norm_w_z,               # 7. Yaw Dynamics
-            self.data.ctrl[0],      # 8. Left Motor Command
-            self.data.ctrl[1],      # 9. Right Motor Command 
-#            norm_target_lin,      # 8. SETPOINT: Velocity
-#            norm_target_ang       # 9. SETPOINT: Direction
+            norm_past_pitch,        # 2. Past Balance State
+            norm_w_y,               # 3. Pitch Dynamics
+            norm_a_x,               # 4. Accel X
+            norm_a_z,               # 5. Accel Z
+            norm_w_z,               # 6. Yaw Dynamics
+            norm_past_wz,           # 7. Past Yaw Dynamics
+            #norm_w_x,               # 8. Roll Dynamics
+            #norm_past_wx,           # 9. Past Roll Dynamics
+            self.data.ctrl[0],      # 10. Left Motor Command
+            self.data.ctrl[1],      # 11. Right Motor Command
+            self.past_ctrl[0],     # 12. Past Left Motor Command
+            self.past_ctrl[1],     # 13. Past Right Motor Command
         ], dtype=np.float32)
 
+        self.past_pitch = self.pitch
+        self.past_wz = self.angular_velocity[2]
+        self.past_wx = self.angular_velocity[0]
+        self.past_ctrl = self.data.ctrl.copy()
+
+        return obsv
 
     # Environment termination and truncation conditions and initialization
     def _is_terminated(self) -> bool:
@@ -335,10 +357,13 @@ class SelfBalancingRobotEnv(gym.Env):
         r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
         _, pitch, _ = r.as_euler('xyz', degrees=False) # in radians
         return bool(
-            abs(pitch) > self.max_pitch
+            abs(self.pitch) > self.max_pitch
             )
 
     def _initialize_random_state(self):
+        # Reset ctrl inputs
+        self.data.ctrl[:] = 0.0
+
         # Initialize accelerometer initial calibration scale
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
 
@@ -358,6 +383,12 @@ class SelfBalancingRobotEnv(gym.Env):
         # Euler → Quaternion [x, y, z, w]
         quat_xyzw = R.from_euler('xyz', euler).as_quat()
         self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
+
+        self.past_pitch = 0.0
+        self.past_wz = 0.0
+        self.past_wx = 0.0
+        self.past_ctrl = np.array([0.0, 0.0])
+
    
     # Function not used  
     def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:

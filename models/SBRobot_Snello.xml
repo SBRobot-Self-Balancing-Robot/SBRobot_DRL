@@ -3,7 +3,7 @@
   <option integrator="implicitfast"/>
 
   <worldbody>
-    <body name="Chassis" pos="0.0018212049035355449 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+    <body name="Chassis" pos="0.0018212049035355449 0.0 0.025" quat="1.0 0.0 0.0 0.0">
       <inertial mass="0.70" pos="0.0 0.0 0.0"/>
       <geom type="mesh" name="Chassis geom" mesh="Chassis" rgba="1.0 1.0 1.0 1.0" />
       <joint type="free" name="floating_joint"/>
@@ -48,14 +48,14 @@
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="left_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
         <geom type="mesh" name="WheelL_visual" mesh="WheelL" rgba="1 1 1 1" contype="0" conaffinity="0"/>
-        <geom type="ellipsoid" name="WheelL_collision" pos="0 0 0" size="0.0625 0.0625 0.012" rgba="0.8 0.2 0.2 0.3" friction="0.8 0.05 0.002"/>
+        <geom type="cylinder" name="WheelL_collision" pos="0 0 0" size="0.0625 0.01" rgba="0.8 0.2 0.2 0.3" friction="0.8 0.05 0.002"/>
       </body>
 
       <body name="WheelR" pos="-0.0017284463392570615 -0.14910069108009338 -0.192415252327919" quat="0.7071067094802856 0.70710688829422 0.0 0.0">
         <inertial mass="0.134" pos="0.0 0.0 0.0" diaginertia="0.00014 0.00014 0.00026"/>
         <joint name="right_wheel_joint" type="hinge" axis="0 0 1" damping="0.2" armature="5.3e-05"/>
         <geom type="mesh" name="WheelR_visual" mesh="WheelR" rgba="1 1 1 1" contype="0" conaffinity="0"/>
-        <geom type="ellipsoid" name="WheelR_collision" pos="0 0 0" size="0.0625 0.0625 0.012" rgba="0.8 0.2 0.2 0.3" friction="1.0 0.075 0.002"/>
+        <geom type="cylinder" name="WheelR_collision" pos="0 0 0" size="0.0625 0.01" rgba="0.8 0.2 0.2 0.3" friction="1.0 0.075 0.002"/>
       </body>
 
     </body>
