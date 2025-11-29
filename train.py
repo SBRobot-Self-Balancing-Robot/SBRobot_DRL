@@ -272,6 +272,12 @@ if __name__ == "__main__":
             with open(os.path.join(mesh_folder, mesh_file), 'r') as original_mesh:
                 f.write(original_mesh.read())
     
+    # Copy the reward.py file in folder f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/"
+    reward_path = "./src/env/wrappers/reward.py"
+    with open(os.path.join(f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/reward.py"), 'w') as f:
+        with open(reward_path, 'r') as original_reward:
+            f.write(original_reward.read())
+
     folder_to_compress = f"{POLICIES_FOLDER}/{FOLDER_PREFIX}"
     
     # Start testing
