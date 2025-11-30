@@ -86,11 +86,24 @@ class SelfBalancingRobotEnv(gym.Env):
         # Offset angle at the beginning of the simulation
         self.offset_angle = self._get_offset()
 
+        # Initialize past values for observation
         self.past_pitch = 0.0
         self.past_wz = 0.0
         self.past_ctrl = np.array([0.0, 0.0])
         self.past_x_vel = 0.0
         self.past_wheels_velocity = np.zeros(2)
+
+        # Save initial masses for randomization
+        self.initial_masses = self.model.body_mass.copy()
+
+        # Save original body positions for randomization
+        self.original_body_ipos = self.model.body_ipos.copy()
+
+        # Save original IMU position for randomization
+        self.imu_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "IMU")
+        self.original_imu_pos = self.model.body_pos[self.imu_id].copy()
+        self.original_imu_quat = self.model.body_quat[self.imu_id].copy()
+
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
         """
@@ -492,37 +505,129 @@ class SelfBalancingRobotEnv(gym.Env):
             abs(pitch) > self.max_pitch
             )
 
-    def _initialize_random_state(self):
-        # Reset ctrl inputs
-        self.data.ctrl[:] = 0.0
 
-        # Initialize accelerometer initial calibration scale
-        self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
-
-        # Reset position and velocity
+    def _space_positioning(self):
+        """
+        Randomly position the robot within defined ranges for x, y, pitch, and yaw.
+        """
+        # Random position
         self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.255]  # Initial position (x, y, z)
-        self.data.qvel[:] = 0.0  # Initial speed
 
-        # Euler angles: Roll=0, Pitch=random, Yaw=random
+        # Reandom orientation
         euler = [
             0.0, # Roll
             np.random.uniform(-0.05, 0.05), # Pitch
             np.random.uniform(-np.pi, np.pi) # Yaw
         ]
-        # Euler → Quaternion [x, y, z, w] (Scipy convention)
+        # Euler → Quaternion [x, y, z, w]
         quat_xyzw = R.from_euler('xyz', euler).as_quat()
 
         self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
 
+        self.Q = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+
+    def _reset_params(self):
+        """
+        Reset environment parameters to default values.
+        """
+        # Reset ctrl inputs
+        self.data.ctrl[:] = 0.0
+
+        # Reset speeds
+        self.data.qvel[:] = 0.0
+
+        # Reset past values
         self.past_pitch = 0.0
         self.past_wz = 0.0
-        
-        self.Q = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
-        
         self.past_ctrl = np.array([0.0, 0.0])
         self.past_wheels_velocity = np.array([0.0, 0.0])
+    
+    def _randomize_masses(self):
+        """
+        Randomize the masses of the robot's components within ±10% of their original values.
+        """
+        for i in range(self.model.nbody):
+            random_factor = np.random.uniform(0.9, 1.1)
+            self.model.body_mass[i] = self.initial_masses[i] * random_factor
 
-   
+    def _randomize_com(self):
+        """
+        Randomize the center of mass of each body by adding a small positional offset (±2 mm).
+        """
+        for i in range(self.model.nbody):
+            offset = np.random.uniform(-0.002, 0.002, size=3)  # ±2 mm
+            self.model.body_ipos[i] = self.original_body_ipos[i] + offset
+
+    def _randomize_imu_pose(self):
+        """
+        Randomize the IMU pose by adding small positional and rotational offsets.
+        """
+        # Random position offset ±5 mm
+        pos_offset = np.random.uniform(-0.005, 0.005, size=3)
+        self.model.body_pos[self.imu_id] = self.original_imu_pos + pos_offset
+
+        # Random rotation offset ±0.01 rad (about 0.57°) per axis
+        euler_offset = np.random.uniform(-0.01, 0.01, size=3)
+        quat_offset = R.from_euler("xyz", euler_offset).as_quat() 
+        # Convert to MuJoCo format [w, x, y, z]
+        quat_offset_mj = np.array([quat_offset[3], quat_offset[0], quat_offset[1], quat_offset[2]])
+
+        # Multiply the original IMU quaternion by the offset
+        new_quat = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mulQuat(new_quat, self.original_imu_quat, quat_offset_mj)
+        self.model.body_quat[self.imu_id] = new_quat
+
+    def _randomize_actuator_gains(self):
+        """
+        Randomize the actuator gains within ±20% of their original values.
+        """
+        left_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
+        right_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_motor")
+
+
+        # varia kv del ±20%
+        self.model.actuator_gainprm[left_id][0] = np.random.uniform(16, 24)
+        self.model.actuator_gainprm[right_id][0] = np.random.uniform(16, 24)
+
+    def _randomize_wheel_friction(self):
+        """
+        Randomize the friction parameters of the wheels within ±10% of given values.
+        """
+        # random ±10% per ogni componente dell'attrito
+        sliding   = np.random.uniform(0.8, 1.0)   # 0.9 ±10%
+        torsional = np.random.uniform(0.045, 0.055) # 0.05 ±10%
+        rolling   = np.random.uniform(0.0018, 0.0022) # 0.002 ±10%
+
+        for wheel in ["WheelL_collision", "WheelR_collision"]:
+            geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, wheel)
+            self.model.geom_friction[geom_id] = [sliding, torsional, rolling]
+
+    def _initialize_random_state(self):
+        # Position the robot randomly within a small range
+        self._space_positioning()
+
+        # Reset other parameters
+        self._reset_params()
+
+        # Randomize masses
+        self._randomize_masses()
+
+        # Randomize center of mass
+        self._randomize_com()
+
+        # Randomize IMU pose
+        self._randomize_imu_pose()
+
+        # Randomize actuator gains
+        self._randomize_actuator_gains()
+
+        # Randomize wheels friction
+        self._randomize_wheel_friction()
+
+        # Initialize accelerometer initial calibration scale
+        self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
+
+
     # Function not used  
     def _dirty_gyro(self, gyro_data: np.ndarray) -> np.ndarray:
             """
