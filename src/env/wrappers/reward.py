@@ -1,6 +1,6 @@
+import numpy as np
 import typing as T
 import gymnasium as gym
-import numpy as np
 from scipy.spatial.transform import Rotation as R
 from src.env.self_balancing_robot_env.self_balancing_robot_env import SelfBalancingRobotEnv
 
@@ -32,7 +32,7 @@ class RewardWrapper(gym.Wrapper):
         if terminated and not truncated:
             reward += 10 
         elif truncated:
-            reward -= 100 * (1 - (self.env.data.time / self.env.max_time))
+            reward -= 100 * (1 - (self.env.env.data.time / self.env.env.max_time))
 
         return obs, reward, terminated, truncated, info
 
@@ -77,7 +77,7 @@ class RewardCalculator:
         x_vel = env.x_vel  # in m/s
 
         # Position
-        x_pos = env.data.qpos[0]
+        x_pos = env.env.data.qpos[0]
 
         # Improved reward: 
         # - Alive bonus: 1.0
@@ -87,7 +87,7 @@ class RewardCalculator:
         # - Pitch rate penalty: 0.05 * |w_pitch| (dampen oscillations)
         # - Control variation penalty: alpha * |ctrl - past_ctrl|^2 * kernel(pitch) (smooth movement in equilibrium)
         
-        current_ctrl = env.data.ctrl.copy()
+        current_ctrl = env.env.data.ctrl.copy()
         ctrl_variation = np.sum(np.square(current_ctrl - self.past_ctrl))
         
         # Scale penalty by how close we are to equilibrium (pitch = 0)

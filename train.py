@@ -18,6 +18,7 @@ from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.callbacks import BaseCallback
+from src.env.wrappers.observations import ObservationWrapper
 
 from src.env.self_balancing_robot_env.self_balancing_robot_env import SelfBalancingRobotEnv
 from src.env.wrappers.reward import RewardWrapper
@@ -119,6 +120,7 @@ def make_env():
     """
     def _init():
         environment = SelfBalancingRobotEnv()  # Usa direttamente SelfBalancingRobotEnv
+        environment = ObservationWrapper(environment)  # Applica l'ObservationWrapper
         environment = RewardWrapper(environment)  # Applica il RewardWrapper
         environment = Monitor(environment)
         check_env(environment, warn=True)
