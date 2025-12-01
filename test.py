@@ -9,6 +9,7 @@ import argparse
 import gymnasium as gym
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
+from src.env.wrappers.observations import ObservationWrapper
 from src.env.self_balancing_robot_env.self_balancing_robot_env import (SelfBalancingRobotEnv)
 
 def _parse_model(model_name: str):
@@ -55,6 +56,7 @@ def make_env(environment_path="./models/scene.xml", max_time=float("inf")):
     Crea un'istanza dell'ambiente SelfBalancingRobotEnv con rendering.
     """
     env = SelfBalancingRobotEnv(environment_path=environment_path, max_time=max_time)
+    env = ObservationWrapper(env)
     env = Monitor(env)
     return env
 

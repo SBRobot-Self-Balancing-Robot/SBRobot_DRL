@@ -119,9 +119,9 @@ def make_env():
     Creates an instance of the SelfBalancingRobotEnv environment wrapped with RewardWrapper.
     """
     def _init():
-        environment = SelfBalancingRobotEnv()  # Usa direttamente SelfBalancingRobotEnv
-        environment = ObservationWrapper(environment)  # Applica l'ObservationWrapper
-        environment = RewardWrapper(environment)  # Applica il RewardWrapper
+        environment = SelfBalancingRobotEnv()  
+        environment = ObservationWrapper(environment)  
+        environment = RewardWrapper(environment)  
         environment = Monitor(environment)
         check_env(environment, warn=True)
         return environment

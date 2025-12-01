@@ -67,7 +67,6 @@ class SelfBalancingRobotEnv(gym.Env):
         self.original_imu_pos = self.model.body_pos[self.imu_id].copy()
         self.original_imu_quat = self.model.body_quat[self.imu_id].copy()
 
-
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
         """
         Perform a step in the environment.
