@@ -70,6 +70,7 @@ def save_configuration(env, xml: str, model: str, folder_name: str, iterations: 
         }
         json.dump(config, f, indent=4)
 
+
 def make_env():
     """
     Creates an instance of the SelfBalancingRobotEnv environment wrapped with RewardWrapper.
@@ -84,6 +85,8 @@ def make_env():
     return _init
 
 # Log training progress to wandb
+
+
 class WandbCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
@@ -105,6 +108,26 @@ class WandbCallback(BaseCallback):
                     "avg_length_100": float(np.mean(self.episode_lengths[-100:])),
                 })
         return True
+
+
+def _run(TEST_STEPS, env, writer: csv.writer = None):
+    env.reset()
+    obs, _ = env.reset()
+    for _ in range(TEST_STEPS):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, _ = env.step(action)
+        try:
+            env.render()
+        except Exception as e:
+            break
+        except KeyboardInterrupt:
+            compress_and_remove(folder_to_compress, POLICY_SCP)
+            break
+        if terminated or truncated:
+            obs, _ = env.reset()
+        if writer is not None:
+            writer.writerow(obs.tolist())
+
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -172,10 +195,10 @@ if __name__ == "__main__":
     # Create model with appropriate parameters based on algorithm type
     if MODEL in [PPO, A2C]:
         model = MODEL("MlpPolicy", vec_env, n_steps=N_STEPS,
-                        device=DEVICE, verbose=1)
+                      device=DEVICE, verbose=1)
     elif MODEL in [SAC, TD3, DDPG]:
         model = MODEL("MlpPolicy", vec_env,
-                        buffer_size=BUFFER_SIZE, device=DEVICE, verbose=1)
+                      buffer_size=BUFFER_SIZE, device=DEVICE, verbose=1)
     else:
         model = MODEL("MlpPolicy", vec_env, device=DEVICE, verbose=1)
 
@@ -184,7 +207,7 @@ if __name__ == "__main__":
 
     model.save(f"{POLICIES_FOLDER}/{FOLDER_PREFIX}/policy")
     print(f"Model saved to {POLICIES_FOLDER}/{FOLDER_PREFIX}/policy.zip")
-    
+
     # Test
     env = make_env()()
     save_configuration(
@@ -192,8 +215,6 @@ if __name__ == "__main__":
         folder_name=FOLDER_PREFIX, iterations=ITERATIONS, processes=PROCESSES
     )
 
-
-    
     folder_to_compress = backup(POLICIES_FOLDER, FOLDER_PREFIX, XML_FILE)
 
     # Start testing
@@ -202,26 +223,8 @@ if __name__ == "__main__":
             writer = csv.writer(file)
             writer.writerow(["Pitch", "Y angular Velocity Y", "Accel X", "Accel Z", "Left Wheel Velocity",
                             "Right Wheel Velocity", "Yaw angular Velocity Z", "Left Motor Command", "Right Motor Command"])
-            _run(TEST_STEPS, writer)
+            _run(TEST_STEPS, env, writer)
     elif not REGISTER_DATASET and not HEADLESS:
-        _run(TEST_STEPS)
+        _run(TEST_STEPS, env)
 
     compress_and_remove(folder_to_compress, POLICY_SCP)
-
-def _run(TEST_STEPS, env, writer: csv.writer = None):
-    env.reset()
-    obs, _ = env.reset()
-    for _ in range(TEST_STEPS):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, _ = env.step(action)
-        try:
-            env.render()
-        except Exception as e:
-            break
-        except KeyboardInterrupt:
-            compress_and_remove(folder_to_compress, POLICY_SCP)
-            break
-        if terminated or truncated:
-            obs, _ = env.reset()
-        if writer is not None:
-            writer.writerow(obs.tolist())
