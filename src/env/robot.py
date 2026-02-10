@@ -14,6 +14,8 @@ from src.env.control.pose_control import PoseControl
 from scipy.spatial.transform import Rotation as R
 
 class SelfBalancingRobotEnv(gym.Env):
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
+
     def __init__(self, 
                  environment_path: str = "./models/scene.xml", 
                  max_time: float = 10.0, 
@@ -122,6 +124,9 @@ class SelfBalancingRobotEnv(gym.Env):
         self.video_path = video_path
         self.video_writer: T.Optional[cv2.VideoWriter] = None
 
+        # Update metadata with the configured render fps
+        self.metadata["render_fps"] = self.render_fps
+
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
         """
         Perform a step in the environment.
@@ -165,6 +170,10 @@ class SelfBalancingRobotEnv(gym.Env):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
+
+        # Reset rendering state
+        self._frame_count = 0
+        self._sim_start_time = None
         
         if self.render_mode == "human":
             self._sim_start_time = time.time()
@@ -223,7 +232,15 @@ class SelfBalancingRobotEnv(gym.Env):
         else:
             print("Warning: Tried to add a non-callable render callback.")
     
-    def render(self):
+    def update_camera(self):
+        """Updates the camera lookat point to follow the robot's base."""
+        robot_pos = self.data.qpos[:3]
+        self.camera.lookat[:] = robot_pos
+
+        if self.render_mode == "human" and self.viewer is not None and self.viewer.is_running():
+            self.viewer.cam.lookat[:] = robot_pos
+
+    def render(self) -> T.Optional[np.ndarray]:
         """Renders the environment based on the render_mode."""
         if self.render_mode is None:
             return None
@@ -243,6 +260,9 @@ class SelfBalancingRobotEnv(gym.Env):
                  print(f"Warning: Failed to initialize MuJoCo renderer: {e}")
                  self.render_mode = None # Disable rendering
                  return None
+
+        # Update camera to follow the robot
+        self.update_camera()
 
         try:
             self.renderer.update_scene(self.data, scene_option=self.scene_option, camera=self.camera)
@@ -500,13 +520,12 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialize accelerometer initial calibration scale
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
         
-    def _get_active_scenes(self) -> T.Optional[mujoco.MjvScene]:
-        """Helper to get the scenes objects."""
+    def _get_active_scenes(self) -> T.Optional[T.List[mujoco.MjvScene]]:
+        """Helper to get the active scene objects for custom geometry rendering."""
         scenes = []
-        renderer = mujoco.Renderer(self.model, self.data)
         # Check if renderer is initialized
-        if renderer is not None:
-            scenes.append(renderer.scene)
+        if self.renderer is not None:
+            scenes.append(self.renderer.scene)
 
         # Check if viewer is initialized
         if self.viewer is not None:
@@ -536,3 +555,37 @@ class SelfBalancingRobotEnv(gym.Env):
                 scn.ngeom += 1
             except IndexError:
                 print("Warning: Ran out of geoms in MuJoCo scene for rendering vector.")
+
+    def render_point(self, position: np.ndarray, color: T.List[float], radius: float = 0.01):
+        """Helper to render a sphere geometry at a point in the scene."""
+        scns = self._get_active_scenes()
+
+        if scns is None: return
+
+        for scn in scns:
+            if scn.ngeom >= scn.maxgeom: return
+
+            idx = scn.ngeom
+            size = np.array([radius, radius, radius])
+            rgba = np.array(color, dtype=np.float32)
+            try:
+                mujoco.mjv_initGeom(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_SPHERE, size, position.astype(np.float64), np.eye(3).flatten(), rgba)
+                scn.ngeom += 1
+            except IndexError:
+                print("Warning: Ran out of geoms in MuJoCo scene for rendering point.")
+
+    def close(self):
+        """Cleans up resources: renderer, viewer, and video writer."""
+        if self.renderer is not None:
+            self.renderer.close()
+            self.renderer = None
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
+        if self.viewer is not None:
+            try:
+                if self.viewer.is_running():
+                    self.viewer.close()
+            except Exception as e:
+                print(f"Warning: Error closing MuJoCo viewer: {e}")
+            self.viewer = None
