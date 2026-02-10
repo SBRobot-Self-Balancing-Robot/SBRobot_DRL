@@ -9,7 +9,7 @@ class PoseControl:
     """
 
     # Default ranges for random generation
-    DEFAULT_SPEED_RANGE: T.Tuple[float, float] = (0.0, 1.0) # m/s
+    DEFAULT_SPEED_RANGE: T.Tuple[float, float] = (-1.5, 1.5) # rad/s
 
     def __init__(self):
         self._heading = np.array([1.0, 0.0])   # Unit heading vector (pointing along x-axis)

@@ -33,7 +33,7 @@ class RewardWrapper(gym.Wrapper):
         if terminated and not truncated:
             reward += 50
         elif truncated:
-            reward -= 100 * (1 - (self.env.env.data.time / self.env.env.max_time))
+            reward -= 200 * (1 - (self.env.env.data.time / self.env.env.max_time))
 
         return obs, reward, terminated, truncated, info
 
@@ -54,7 +54,7 @@ class RewardCalculator:
     HEADING LOCK VERSION: Keeps the robot facing a specific direction (Yaw=0).
     """
     def __init__(self, 
-                    heading_weight: float = 1.0, 
+                    heading_weight: float = 0.8, 
                     velocity_weight: float = 0.5, 
                     control_variety_weight: float = 0.2):
         self.heading_weight = heading_weight
@@ -95,16 +95,16 @@ class RewardCalculator:
         velocity_error = self._velocity_error(env)
         ctrl_variation = env.ctrl_variation
         
-        '''
-        self.heading_weight * abs(heading_error) +
-                   self.velocity_weight * abs(velocity_error) +
-                   self.control_variety_weight * np.linalg.norm(ctrl_variation)
-        '''
         
-        reward = -(self._kernel(heading_error, alpha=0.1)+ 
-                   self._kernel(velocity_error, alpha=0.05)+ 
-                   self._kernel(float(np.linalg.norm(ctrl_variation)), alpha=0.25))
-        return reward # type: ignore
+        reward = self.heading_weight * abs(heading_error) * env.env.data.time + \
+                 self.velocity_weight * abs(velocity_error) + \
+                 self.control_variety_weight * np.linalg.norm(ctrl_variation)
+        
+        
+        # reward = -(self._kernel(heading_error, alpha=0.1)+ 
+        #            self._kernel(velocity_error, alpha=0.05)+ 
+        #            self._kernel(float(np.linalg.norm(ctrl_variation)), alpha=0.25))
+        return -reward # type: ignore
 
     def _kernel(self, x: float, alpha: float) -> float:
         return np.exp(-(x**2)/alpha)
