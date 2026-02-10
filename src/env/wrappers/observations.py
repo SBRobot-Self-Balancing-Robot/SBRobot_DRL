@@ -73,11 +73,25 @@ class ObservationWrapper(gym.Wrapper):
         Returns:
             Initial modified observation and additional info.
         """
+        
         obs, info = self.env.reset(**kwargs)
 
         obs = self._get_obs()
 
+        self._reset_params()
+
         return obs, info
+    
+    def _reset_params(self):
+        """
+        Reset environment parameters to default values.
+        """
+        # Reset past control commands
+        self.past_ctrl = np.array([0.0, 0.0])
+
+        # Reset control variation
+        self.ctrl_variation = np.array([0.0, 0.0])
+        
 
     # Sensor reading and observation construction
     def _get_wheels_data(self) -> T.Tuple[float, float, float, float]:
@@ -181,7 +195,7 @@ class ObservationWrapper(gym.Wrapper):
     
     def _value_variation(self, current_value, past_value) -> float:
         """Compute the variation of a value over time."""
-        return (current_value - past_value) / self.env.time_step if self.env.time_step != 0 else 0
+        return (current_value - past_value)
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -206,7 +220,7 @@ class ObservationWrapper(gym.Wrapper):
         # Data from IMU: linear_acceleration [ax, ay, az], angular_velocity [wx, wy, wz], orientation angles (roll, pitch, yaw), direction_vector
         self.linear_acceleration = self._get_body_linear_acceleration()
         self.angular_velocity = self._get_robot_angular_velocity()
-        self.direction_vector, self.pitch, self.roll, self.yaw = self._get_body_orientation_angles(self.linear_acceleration, self.angular_velocity)
+        self.direction_vector, self.pitch, self.roll, self.yaw = self._get_body_orientation_angles(self.angular_velocity, self.linear_acceleration)
         
         # Control commands sent to the motors
         self.ctrl = self.env.data.ctrl.copy() # Control commands sent to the motors [left_motor_command, right_motor_command]
@@ -219,6 +233,7 @@ class ObservationWrapper(gym.Wrapper):
         norm_pitch = self._normalize_value(self.pitch, np.pi/2)
 
         # Angular Velocities (Gyro): Normalized over Full Scale Range (FSR)
+        norm_w_y = self._normalize_value(self.angular_velocity[1], FSR_GYRO * DEG2RAD) # Pitch rate (real)
         norm_w_z = self._normalize_value(self.angular_velocity[2], FSR_GYRO * DEG2RAD) # Yaw rate (real)
 
         # Wheel Speeds: Normalized over maximum speed
@@ -247,26 +262,26 @@ class ObservationWrapper(gym.Wrapper):
         obsv = np.array([
             # Pitch and related dynamics
             norm_pitch,                 # 1. Balance State
+            norm_w_y,                   # 2. Pitch Dynamics
 
             # Yaw dynamics
-            norm_w_z,                   # 2. Yaw Dynamics
+            norm_w_z,                   # 3. Yaw Dynamics
             
             # Wheels dynamics
-            norm_ctrl_left,             # 3. Left Motor Command
-            norm_ctrl_right,            # 4. Right Motor Command
-            self.ctrl_variation[0],     # 5. Left Motor Command Variation
-            self.ctrl_variation[1],     # 6. Right Motor Command Variation
+            norm_ctrl_left,             # 4. Left Motor Command
+            norm_ctrl_right,            # 5. Right Motor Command
+            self.ctrl_variation[0],     # 6. Left Motor Command Variation
+            self.ctrl_variation[1],     # 7. Right Motor Command Variation
 
             # Wheels velocities
-            norm_wheel_left_vel,        # 7. Left Wheel Velocity
-            norm_wheel_right_vel,       # 8. Right Wheel Velocity
+            norm_wheel_left_vel,        # 8. Left Wheel Velocity
+            norm_wheel_right_vel,       # 9. Right Wheel Velocity
             
-            heading_error,              # 9. Heading Error (Direction)
-            velocity_error              # 10. Velocity Error (Speed)
+            heading_error,              # 10. Heading Error (Direction)
+            velocity_error              # 11. Velocity Error (Speed)
 
         ], dtype=np.float32)
 
         self.past_ctrl = self.ctrl.copy() # Update past control for the next step
 
         return obsv
-    
