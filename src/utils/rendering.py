@@ -1,4 +1,6 @@
-
+import mujoco
+import numpy as np
+from typing import List, Optional
 
 
 def _get_active_scenes(self) -> Optional[mujoco.MjvScene]:

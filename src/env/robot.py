@@ -8,6 +8,7 @@ import numpy as np
 import typing as T
 import gymnasium as gym
 from mujoco import MjModel, MjData
+from src.utils.rendering import render_vector, render_point
 from mujoco.viewer import launch_passive
 from src.env.control.pose_control import PoseControl
 from scipy.spatial.transform import Rotation as R
@@ -127,6 +128,11 @@ class SelfBalancingRobotEnv(gym.Env):
             self.viewer = launch_passive(self.model, self.data)
         if self.viewer.is_running():
             self.viewer.sync()
+            # render the heading vector
+            heading_vector = self.pose_control.heading
+            heading_vector = np.array(self.pose_control.heading[0], self.pose_control.heading[1], 0.0)
+            
+            render_vector(self.viewer, origin=self.data.xpos[0], vector=heading_vector, color=[0.0, 1.0, 0.0, 1.0], radius=0.01, offset=0.05)
             time.sleep(self.model.opt.timestep * self.frame_skip)  # Sleep for the duration of the frame skip
         else:
             raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")    

@@ -93,11 +93,17 @@ class RewardCalculator:
         """
         heading_error = self._heading_error(env)
         velocity_error = self._velocity_error(env)
-        ctrl_variation = env.ctrl_variation 
+        ctrl_variation = env.ctrl_variation
         
-        reward = -(self.heading_weight * abs(heading_error) +
+        '''
+        self.heading_weight * abs(heading_error) +
                    self.velocity_weight * abs(velocity_error) +
-                   self.control_variety_weight * np.linalg.norm(ctrl_variation))
+                   self.control_variety_weight * np.linalg.norm(ctrl_variation)
+        '''
+        
+        reward = -(self._kernel(heading_error, alpha=0.1)+ 
+                   self._kernel(velocity_error, alpha=0.05)+ 
+                   self._kernel(float(np.linalg.norm(ctrl_variation)), alpha=0.25))
         return reward # type: ignore
 
     def _kernel(self, x: float, alpha: float) -> float:
