@@ -3,7 +3,6 @@ Environment for a self-balancing robot using MuJoCo.
 """
 import os
 import time
-import cv2
 import mujoco
 import numpy as np
 import typing as T
@@ -14,19 +13,7 @@ from src.env.control.pose_control import PoseControl
 from scipy.spatial.transform import Rotation as R
 
 class SelfBalancingRobotEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
-
-    def __init__(self, 
-                 environment_path: str = "./models/scene.xml", 
-                 max_time: float = 10.0, 
-                 max_pitch: float = 0.5, 
-                 frame_skip: int = 10, 
-                 render_mode: T.Optional[str] = None, 
-                 width: int = 720,
-                 height: int = 480,
-                 render_fps: int = 30,
-                 save_video: bool = False,
-                 video_path: str = "videos/simulation.mp4",):
+    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.5, frame_skip: int = 10):
         """
         Initialize the SelfBalancingRobot environment.
         
@@ -35,24 +22,15 @@ class SelfBalancingRobotEnv(gym.Env):
             max_time (float): Maximum time for the episode.
             max_pitch (float): Maximum pitch angle before truncation.
             frame_skip (int): Number of frames to skip in each step.
-            render_mode (str, optional): The mode for rendering. Defaults to None.
-            width (int, optional): Width of the render window. Defaults to 720.
-            height (int, optional): Height of the render window. Defaults to 480.
-            render_fps (int, optional): Frames per second for rendering. Defaults to 30.
-            save_video (bool, optional): Whether to save the video. Defaults to False.
-            video_path (str, optional): Path to save the video. Defaults to "videos/simulation.mp4".
         """
         super().__init__()
+        self.viewer = None
         full_path = os.path.abspath(environment_path)
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Model file not found: {full_path}")
-        # Load MuJoCo model and data
-        try:
-            self.model = MjModel.from_xml_path(full_path)
-            self.data = MjData(self.model)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load MuJoCo model from {full_path}: {e}") from e
         
+        self.model = MjModel.from_xml_path(full_path)
+        self.data = MjData(self.model)
         self.max_time = max_time        # Maximum time for the episode
         self.frame_skip = frame_skip    # Number of frames to skip in each step  
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
@@ -91,41 +69,7 @@ class SelfBalancingRobotEnv(gym.Env):
 
         # Initialize pose control
         self.pose_control = PoseControl()
-        
-        # Rendering setup
-        self.render_mode = render_mode
-        self.width = width
-        self.height = height
-        self.render_fps = render_fps
-        
-        self.renderer: T.Optional[mujoco.Renderer] = None
-        self.viewer: T.Optional[mujoco.viewer.Handle] = None
-        
-        self._render_callbacks: T.List[T.Callable[[], None]] = []
-        
-        self._sim_start_time: T.Optional[float] = None
-        self._frame_count: int = 0
 
-        # Camera and Scene options
-        self.camera = mujoco.MjvCamera()
-        self.camera.distance = 1.0  # Distance from the robot
-        self.camera.elevation = -30  # Camera elevation angle
-        self.camera.azimuth = 120  # Camera azimuth angle
-
-        # Set up scene options.
-        self.scene_option = mujoco.MjvOption()
-        self.scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = False
-        self.scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = False
-        self.scene_option.frame = mujoco.mjtFrame.mjFRAME_SITE
-        self.scene_option.geomgroup[:] = 1
-        
-        # Video recording
-        self.save_video = save_video
-        self.video_path = video_path
-        self.video_writer: T.Optional[cv2.VideoWriter] = None
-
-        # Update metadata with the configured render fps
-        self.metadata["render_fps"] = self.render_fps
 
     def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
         """
@@ -170,173 +114,27 @@ class SelfBalancingRobotEnv(gym.Env):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
-
-        # Reset rendering state
-        self._frame_count = 0
-        self._sim_start_time = None
-        
-        if self.render_mode == "human":
-            self._sim_start_time = time.time()
-            if self.viewer is None:
-                try:
-                    self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-
-                    # --- Apply visualization options to the viewer ---
-                    # Copy flags from self.scene_option to viewer.opt
-                    self.viewer.opt.flags[:] = self.scene_option.flags[:]
-                    # Copy frame setting
-                    self.viewer.opt.frame = self.scene_option.frame
-                    # Copy geom group settings
-                    self.viewer.opt.geomgroup[:] = self.scene_option.geomgroup[:]
-                    # --- End of applying visualization options ---
-
-                    # Apply camera settings from self.camera to the viewer
-                    self.viewer.cam.distance = self.camera.distance
-                    self.viewer.cam.elevation = self.camera.elevation
-                    self.viewer.cam.azimuth = self.camera.azimuth
-                    # Set initial lookat based on current qpos (might be randomized)
-                    robot_pos = self.data.qpos[:3]
-                    self.viewer.cam.lookat[:] = robot_pos
-
-                except Exception as e:
-                    print(f"Warning: Could not launch MuJoCo viewer: {e}")
-                    self.viewer = None
-            elif self.viewer.is_running():
-                self.viewer.sync()
-        
-        # Initialize video writer if saving video
-        if self.save_video and self.video_writer is None:
-            # Ensure the directory exists
-            os.makedirs(os.path.dirname(self.video_path), exist_ok=True)
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.render_fps, (self.width, self.height))
-
-        observation = self._get_obs()
-        info = self._get_info() # Get initial info (usually empty)
-
-        return observation, info
+        return [], {}
     
-    def _get_obs(self) -> np.ndarray:
-        """Default observation: returns all available sensor data."""
-        return self.data.sensordata.copy()
-
-    def _get_info(self) -> T.Dict[str, T.Any]:
-        """Returns basic information about the environment state."""
-        # Base environment provides minimal info. Wrappers add more.
-        return {"time": self.data.time}
+    # def render(self, mode='human'):
+    #     """
+    #     Render the environment.
         
-    def add_render_callback(self, callback: T.Callable[[], None]):
-        """Registers a function to be called during the render cycle."""
-        if callable(callback):
-            self._render_callbacks.append(callback)
-        else:
-            print("Warning: Tried to add a non-callable render callback.")
-    
-    def update_camera(self):
-        """Updates the camera lookat point to follow the robot's base."""
-        robot_pos = self.data.qpos[:3]
-        self.camera.lookat[:] = robot_pos
-
-        if self.render_mode == "human" and self.viewer is not None and self.viewer.is_running():
-            self.viewer.cam.lookat[:] = robot_pos
-
-    def render(self) -> T.Optional[np.ndarray]:
-        """Renders the environment based on the render_mode."""
-        if self.render_mode is None:
-            return None
-
-        # Throttle rendering based on render_fps
-        sim_time = self.data.time
-        expected_frames = int(sim_time * self.render_fps)
-        if self._frame_count >= expected_frames:
-            return None # Skip frame
-        self._frame_count += 1
-
-        # Initialize renderer if needed
-        if self.renderer is None:
-            try:
-                self.renderer = mujoco.Renderer(self.model, width=self.width, height=self.height)
-            except Exception as e:
-                 print(f"Warning: Failed to initialize MuJoCo renderer: {e}")
-                 self.render_mode = None # Disable rendering
-                 return None
-
-        # Update camera to follow the robot
-        self.update_camera()
-
-        try:
-            self.renderer.update_scene(self.data, scene_option=self.scene_option, camera=self.camera)
-
-            if self.viewer is not None:
-                # Reset the user geom buffer for the viewer
-                self.viewer.user_scn.ngeom = 0
-
-            # Call registered render callbacks
-            for callback in self._render_callbacks:
-                    try:
-                        # Pass self in case the callback needs access to env methods directly
-                        # Or adjust callback signature if it only needs renderer/scene
-                        callback()
-                    except Exception as e:
-                        print(f"Warning: Error during render callback: {e}")
-
-        except mujoco.FatalError as e:
-             print(f"Warning: MuJoCo error during scene update: {e}")
-             return None # Skip rendering this frame
-
-        # Get pixel data
-        try:
-            pixels = self.renderer.render()
-        except mujoco.FatalError as e:
-             print(f"Warning: MuJoCo error during rendering: {e}")
-             return None # Skip rendering this frame
-
-        # Save to video if enabled
-        if self.save_video and self.video_writer is not None:
-            pixels_bgr = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
-            self.video_writer.write(pixels_bgr)
-
-        # Handle different render modes
-        if self.render_mode == "rgb_array":
-            return pixels
-
-        elif self.render_mode == "human":
-            # Check if viewer exists and is running before syncing
-            if self.viewer is not None and self.viewer.is_running():
-                # Wait until wall-clock time catches up to simulation time.
-                if self._sim_start_time is None:
-                    self._sim_start_time = time.time()
-
-                desired_wall_time = self._sim_start_time + self.data.time
-                current_wall_time = time.time()
-                wait_time = desired_wall_time - current_wall_time
-
-                if wait_time > 0:
-                    time.sleep(wait_time)
-
-                # Sync the viewer with the simulation.
-                try: # Add a try-except around sync as well, just in case
-                    self.viewer.sync()
-                except Exception as e:
-                    print(f"Error during viewer sync: {e}")
-                    # Optionally close the viewer or handle the error
-                    if self.viewer:
-                        self.viewer.close()
-                    self.viewer = None # Mark viewer as unusable
-
-                # Check again if the viewer was closed by the user during sync/wait
-                if self.viewer is not None and not self.viewer.is_running():
-                    print("Viewer stopped by the user")
-                    self.viewer.close()
-                    self.viewer = None
-            elif self.viewer is not None and not self.viewer.is_running():
-                 # Handle case where viewer was previously initialized but is now closed
-                 print("Viewer is closed.")
-                 self.viewer.close() # Ensure cleanup
-                 self.viewer = None
-            # else: viewer is None (failed to initialize or already cleaned up)
-
-            return None # Always return None for human mode
+    #     Args:
+    #         mode (str): The mode in which to render the environment. Default is 'human'.
+    #     """
+    #     if self.viewer is None:
+    #         self.viewer = launch_passive(self.model, self.data)
+    #     if self.viewer.is_running():
+    #         self.viewer.sync()
+    #         # render the heading vector
+    #         heading_vector = self.pose_control.heading
+    #         vector_to_render = np.array([heading_vector[0], heading_vector[1], 0.0])
+            
+    #         self.render_vector(self.viewer, origin=self.data.xpos[0], vector=vector_to_render, color=[0.0, 1.0, 0.0, 1.0], radius=0.01, offset=0.05)
+    #         time.sleep(self.model.opt.timestep * self.frame_skip)  # Sleep for the duration of the frame skip
+    #     else:
+    #         raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")    
 
     def _get_offset(self) -> float:
         """
@@ -520,72 +318,74 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialize accelerometer initial calibration scale
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
         
-    def _get_active_scenes(self) -> T.Optional[T.List[mujoco.MjvScene]]:
-        """Helper to get the active scene objects for custom geometry rendering."""
-        scenes = []
-        # Check if renderer is initialized
-        if self.renderer is not None:
-            scenes.append(self.renderer.scene)
+    def render(self, mode='human'):
+        """
+        Render the environment.
+        """
+        if self.viewer is None:
+            self.viewer = launch_passive(self.model, self.data)
+        
+        if self.viewer.is_running():
+            # 1. Recupera i dati di heading
+            heading_vector = self.pose_control.heading
+            vector_to_render = np.array([heading_vector[0], heading_vector[1], 0.0])
+            
+            # 2. Aggiungi il vettore alla scena utente (user_scn)
+            # Nota: le geometrie in user_scn vengono resettate dopo ogni sync(),
+            # quindi vanno riaggiunte ad ogni frame PRIMA di chiamare sync().
+            self.render_vector(
+                origin=self.data.xpos[0], # Posizione del corpo principale
+                vector=vector_to_render, 
+                color=[0.0, 1.0, 0.0, 1.0], # Verde
+                radius=0.02, 
+                scale=0.5 # Lunghezza visiva della freccia
+            )
 
-        # Check if viewer is initialized
-        if self.viewer is not None:
-            scenes.append(self.viewer.user_scn)
+            # 3. Sincronizza il viewer con i dati fisici e le nuove geometrie
+            self.viewer.sync()
+            
+            # 4. Mantieni il timing corretto
+            time.sleep(self.time_step)
+        else:
+            # Opzionale: gestire la chiusura, o semplicemente uscire
+            pass
 
-        if len(scenes) == 0:
-            print("Warning: No active scenes for rendering.")
-            return None
+    def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: T.List[float], scale: float = 1.0, radius: float = 0.02):
+        """
+        Helper to render an arrow geometry in the existing passive viewer scene.
+        """
+        if self.viewer is None:
+            return
 
-        return scenes
+        # Accediamo direttamente alla scena utente del viewer attivo
+        scn = self.viewer.user_scn
 
-    def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: T.List[float], scale: float = 0.2, radius: float = 0.005, offset: float = 0.0):
-        """Helper to render an arrow geometry in the scene."""
-        scns = self._get_active_scenes()
+        # Controlliamo di non aver superato il numero massimo di geometrie consentite
+        if scn.ngeom >= scn.maxgeom:
+            print("Warning: Max geoms reached in viewer scene.")
+            return
 
-        if scns is None: return # No active scenes
+        # Calcoliamo il punto finale della freccia
+        endpoint = origin + (vector * scale)
+        
+        # Inizializziamo la geometria nello slot disponibile (scn.ngeom)
+        mujoco.mjv_initGeom(
+            scn.geoms[scn.ngeom],
+            mujoco.mjtGeom.mjGEOM_ARROW, 
+            np.zeros(3), # La dimensione è gestita dal connector
+            np.zeros(3), # La posizione è gestita dal connector
+            np.zeros(9), # La rotazione è gestita dal connector
+            np.array(color, dtype=np.float32)
+        )
 
-        for scn in scns:
-            if scn.ngeom >= scn.maxgeom: return # Check geom buffer space
-
-            origin_offset = origin.copy() + np.array([0, 0, offset])
-            endpoint = origin_offset + (vector * scale)
-            idx = scn.ngeom
-            try:
-                mujoco.mjv_initGeom(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_ARROW1, np.zeros(3), np.zeros(3), np.zeros(9), np.array(color, dtype=np.float32))
-                mujoco.mjv_connector(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_ARROW1, radius, origin_offset, endpoint)
-                scn.ngeom += 1
-            except IndexError:
-                print("Warning: Ran out of geoms in MuJoCo scene for rendering vector.")
-
-    def render_point(self, position: np.ndarray, color: T.List[float], radius: float = 0.01):
-        """Helper to render a sphere geometry at a point in the scene."""
-        scns = self._get_active_scenes()
-
-        if scns is None: return
-
-        for scn in scns:
-            if scn.ngeom >= scn.maxgeom: return
-
-            idx = scn.ngeom
-            size = np.array([radius, radius, radius])
-            rgba = np.array(color, dtype=np.float32)
-            try:
-                mujoco.mjv_initGeom(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_SPHERE, size, position.astype(np.float64), np.eye(3).flatten(), rgba)
-                scn.ngeom += 1
-            except IndexError:
-                print("Warning: Ran out of geoms in MuJoCo scene for rendering point.")
-
-    def close(self):
-        """Cleans up resources: renderer, viewer, and video writer."""
-        if self.renderer is not None:
-            self.renderer.close()
-            self.renderer = None
-        if self.video_writer is not None:
-            self.video_writer.release()
-            self.video_writer = None
-        if self.viewer is not None:
-            try:
-                if self.viewer.is_running():
-                    self.viewer.close()
-            except Exception as e:
-                print(f"Warning: Error closing MuJoCo viewer: {e}")
-            self.viewer = None
+        # Usiamo mjv_connector per orientare e posizionare la freccia da 'origin' a 'endpoint'
+        mujoco.mjv_connector(
+            scn.geoms[scn.ngeom],
+            mujoco.mjtGeom.mjGEOM_ARROW,
+            radius,
+            origin,
+            endpoint
+        )
+        
+        # Incrementiamo il contatore delle geometrie utilizzate per dire a MuJoCo di disegnarla
+        scn.ngeom += 1
