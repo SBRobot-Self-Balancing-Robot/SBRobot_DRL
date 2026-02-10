@@ -326,29 +326,25 @@ class SelfBalancingRobotEnv(gym.Env):
             self.viewer = launch_passive(self.model, self.data)
         
         if self.viewer.is_running():
-            # 1. Recupera i dati di heading
+            self.viewer.user_scn.ngeom = 0 
+            # ==========================
+
             heading_vector = self.pose_control.heading
             vector_to_render = np.array([heading_vector[0], heading_vector[1], 0.0])
             
-            # 2. Aggiungi il vettore alla scena utente (user_scn)
-            # Nota: le geometrie in user_scn vengono resettate dopo ogni sync(),
-            # quindi vanno riaggiunte ad ogni frame PRIMA di chiamare sync().
+            origin = self.data.xpos[0] 
+
             self.render_vector(
-                origin=self.data.xpos[0], # Posizione del corpo principale
+                origin=origin, 
                 vector=vector_to_render, 
-                color=[0.0, 1.0, 0.0, 1.0], # Verde
+                color=[0.0, 1.0, 0.0, 1.0], 
                 radius=0.02, 
-                scale=0.5 # Lunghezza visiva della freccia
+                scale=0.5 
             )
 
-            # 3. Sincronizza il viewer con i dati fisici e le nuove geometrie
             self.viewer.sync()
             
-            # 4. Mantieni il timing corretto
             time.sleep(self.time_step)
-        else:
-            # Opzionale: gestire la chiusura, o semplicemente uscire
-            pass
 
     def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: T.List[float], scale: float = 1.0, radius: float = 0.02):
         """
@@ -357,28 +353,22 @@ class SelfBalancingRobotEnv(gym.Env):
         if self.viewer is None:
             return
 
-        # Accediamo direttamente alla scena utente del viewer attivo
         scn = self.viewer.user_scn
-
-        # Controlliamo di non aver superato il numero massimo di geometrie consentite
+        
         if scn.ngeom >= scn.maxgeom:
             print("Warning: Max geoms reached in viewer scene.")
             return
 
-        # Calcoliamo il punto finale della freccia
         endpoint = origin + (vector * scale)
         
-        # Inizializziamo la geometria nello slot disponibile (scn.ngeom)
         mujoco.mjv_initGeom(
             scn.geoms[scn.ngeom],
             mujoco.mjtGeom.mjGEOM_ARROW, 
-            np.zeros(3), # La dimensione è gestita dal connector
-            np.zeros(3), # La posizione è gestita dal connector
-            np.zeros(9), # La rotazione è gestita dal connector
+            np.zeros(3), 
+            np.zeros(3), 
+            np.zeros(9), 
             np.array(color, dtype=np.float32)
         )
-
-        # Usiamo mjv_connector per orientare e posizionare la freccia da 'origin' a 'endpoint'
         mujoco.mjv_connector(
             scn.geoms[scn.ngeom],
             mujoco.mjtGeom.mjGEOM_ARROW,
@@ -387,5 +377,4 @@ class SelfBalancingRobotEnv(gym.Env):
             endpoint
         )
         
-        # Incrementiamo il contatore delle geometrie utilizzate per dire a MuJoCo di disegnarla
         scn.ngeom += 1
