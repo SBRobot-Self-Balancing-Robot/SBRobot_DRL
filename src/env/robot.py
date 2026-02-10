@@ -318,39 +318,56 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialize accelerometer initial calibration scale
         self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
         
-    def _get_active_scenes(self) -> Optional[mujoco.MjvScene]:
-        """Helper to get the scenes objects."""
-        scenes = []
-        renderer = mujoco.Renderer(self.model, self.data)
-        # Check if renderer is initialized
-        if renderer is not None:
-            scenes.append(renderer.scene)
+    def _get_active_scene(self) -> T.Optional[mujoco.MjvScene]:
+        """
+        Helper to get the active abstract scene from the viewer.
+        This allows drawing abstract geoms (arrows, lines) on top of the simulation.
+        """
+        # We only care about the viewer's user_scn, which is persistent
+        if self.viewer is not None and self.viewer.user_scn is not None:
+            return self.viewer.user_scn
+        return None
 
-        # Check if viewer is initialized
-        if self.viewer is not None:
-            scenes.append(self.viewer.user_scn)
+    def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: T.List[float], scale: float = 0.2, radius: float = 0.01, offset: float = 0.0):
+        """
+        Helper to render an arrow geometry in the scene using mjv_connector.
+        """
+        scn = self._get_active_scene()
+        
+        # If no viewer is active or the scene is full, do nothing
+        if scn is None:
+            return
+        if scn.ngeom >= scn.maxgeom:
+            print(f"Warning: Geom buffer full ({scn.ngeom}/{scn.maxgeom}). Cannot render vector.")
+            return
 
-        if len(scenes) == 0:
-            print("Warning: No active scenes for rendering.")
-            return None
+        # Calculate start and end points
+        start_pos = origin.copy()
+        start_pos[2] += offset  # Apply Z-axis offset
+        end_pos = start_pos + (vector * scale)
 
-        return scenes
+        # Get the geometry object at the current index
+        geom = scn.geoms[scn.ngeom]
 
-    def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: List[float], scale: float = 0.2, radius: float = 0.005, offset: float = 0.0):
-        """Helper to render an arrow geometry in the scene."""
-        scns = self._get_active_scenes()
+        # 1. Initialize the geom with defaults (clears old data)
+        mujoco.mjv_initGeom(
+            geom,
+            mujoco.mjtGeom.mjGEOM_ARROW, 
+            np.zeros(3), 
+            np.zeros(3), 
+            np.zeros(9), 
+            np.array(color, dtype=np.float32)
+        )
 
-        if scns is None: return # No active scenes
+        # 2. Use mjv_connector to automatically calculate pos and mat
+        # This aligns the arrow from start_pos to end_pos
+        mujoco.mjv_connector(
+            geom,
+            mujoco.mjtGeom.mjGEOM_ARROW,
+            radius,
+            start_pos,
+            end_pos
+        )
 
-        for scn in scns:
-            if scn.ngeom >= scn.maxgeom: return # Check geom buffer space
-
-            origin_offset = origin.copy() + np.array([0, 0, offset])
-            endpoint = origin_offset + (vector * scale)
-            idx = scn.ngeom
-            try:
-                mujoco.mjv_initGeom(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_ARROW1, np.zeros(3), np.zeros(3), np.zeros(9), np.array(color, dtype=np.float32))
-                mujoco.mjv_connector(scn.geoms[idx], mujoco.mjtGeom.mjGEOM_ARROW1, radius, origin_offset, endpoint)
-                scn.ngeom += 1
-            except IndexError:
-                print("Warning: Ran out of geoms in MuJoCo scene for rendering vector.")
+        # 3. Increment the geometry counter to finalize addition
+        scn.ngeom += 1
