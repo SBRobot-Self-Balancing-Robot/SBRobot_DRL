@@ -92,6 +92,7 @@ class SelfBalancingRobotEnv(gym.Env):
         
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)  # Step the simulation
+            
         terminated = self._is_terminated()
         truncated = self._is_truncated()
         
@@ -114,27 +115,7 @@ class SelfBalancingRobotEnv(gym.Env):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
-        return [], {}
-    
-    # def render(self, mode='human'):
-    #     """
-    #     Render the environment.
-        
-    #     Args:
-    #         mode (str): The mode in which to render the environment. Default is 'human'.
-    #     """
-    #     if self.viewer is None:
-    #         self.viewer = launch_passive(self.model, self.data)
-    #     if self.viewer.is_running():
-    #         self.viewer.sync()
-    #         # render the heading vector
-    #         heading_vector = self.pose_control.heading
-    #         vector_to_render = np.array([heading_vector[0], heading_vector[1], 0.0])
-            
-    #         self.render_vector(self.viewer, origin=self.data.xpos[0], vector=vector_to_render, color=[0.0, 1.0, 0.0, 1.0], radius=0.01, offset=0.05)
-    #         time.sleep(self.model.opt.timestep * self.frame_skip)  # Sleep for the duration of the frame skip
-    #     else:
-    #         raise RuntimeError("Viewer is not running. Please reset the environment or start the viewer.")    
+        return [], {}    
 
     def _get_offset(self) -> float:
         """
@@ -205,17 +186,17 @@ class SelfBalancingRobotEnv(gym.Env):
         self.Q = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
         
         # Pose control randomization
-        if np.random.rand() < 0.5: # 50% chance to randomize pose control parameters
-            self.pose_control.randomize()
+        # if np.random.rand() < 0.5: # 50% chance to randomize pose control parameters
+        #     self.pose_control.randomize()
+        # else:
+        r = R.from_euler('xyz', euler).as_matrix()
+        x_head = r[:2, 0]
+        norm = np.linalg.norm(x_head)
+        if norm > 1e-6:
+            unit_vector = x_head / norm
         else:
-            r = R.from_euler('xyz', euler).as_matrix()
-            x_head = r[:2, 0]
-            norm = np.linalg.norm(x_head)
-            if norm > 1e-6:
-                unit_vector = x_head / norm
-            else:
-                unit_vector= np.zeros(2)
-            self.pose_control.heading_angle = unit_vector
+            unit_vector= np.zeros(2)
+        self.pose_control.heading_angle = unit_vector
 
     def _reset_params(self):
         """
@@ -329,15 +310,36 @@ class SelfBalancingRobotEnv(gym.Env):
             self.viewer.user_scn.ngeom = 0 
             # ==========================
 
-            heading_vector = self.pose_control.heading
-            vector_to_render = np.array([heading_vector[0], heading_vector[1], 0.0])
-            
             origin = self.data.xpos[0] 
+
+            # --- Desired heading (green) from PoseControl ---
+            desired_heading = self.pose_control.heading
+            desired_vector = np.array([desired_heading[0], desired_heading[1], 0.0])
 
             self.render_vector(
                 origin=origin, 
-                vector=vector_to_render, 
+                vector=desired_vector, 
                 color=[0.0, 1.0, 0.0, 1.0], 
+                radius=0.02, 
+                scale=0.5 
+            )
+
+            # --- Current heading (red) from robot pose, attached to chassis ---
+            chassis_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Chassis")
+            chassis_pos = self.data.xpos[chassis_id].copy()
+            # Put the origin above the robot, but attached to it (take the height of the chassis into account)
+            origin = chassis_pos + np.array([0.0, 0.0, 0.2])
+
+            quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
+            rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])  # scipy wants [x, y, z, w]
+            _, _, yaw = rot.as_euler('xyz', degrees=False)
+            current_heading = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+
+            self.render_vector(
+                # put the origin above the robot 
+                origin=origin, 
+                vector=current_heading, 
+                color=[1.0, 0.0, 0.0, 1.0], 
                 radius=0.02, 
                 scale=0.5 
             )

@@ -102,6 +102,9 @@ class RewardCalculator:
         ctrl = env.ctrl
         pitch = self._pitch(env)
         
+        # if the heading error is less than a given threshold, update the heading angle
+        if heading_error < 0.1:
+            env.env.pose_control.update_heading()
         
         reward = self.heading_weight * abs(heading_error) * env.env.data.time + \
                  self.velocity_weight * (velocity_error) + \

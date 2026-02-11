@@ -68,7 +68,11 @@ class PoseControl:
         """
         Update the heading vector based on the current heading angle.
         """
-        pass
+        # Update the heading vector adding or subtracting a random angle between 10 and -10 degrees wrt the current angle
+        delta_angle = np.deg2rad(np.random.uniform(-10, 10))
+        current_angle = self.heading_angle
+        new_angle = current_angle + delta_angle
+        self.heading_angle = np.array([np.cos(new_angle), np.sin(new_angle)])
 
     def generate_random_heading(self) -> np.ndarray:
         """
