@@ -330,7 +330,17 @@ class SelfBalancingRobotEnv(gym.Env):
                 # put the origin above the robot 
                 origin=origin, 
                 vector=current_heading, 
-                color=[1.0, 0.0, 0.0, 1.0], 
+                color=[1.0, 0.0, 0.0, 0.5], 
+                radius=0.02, 
+                scale=0.5 
+            )
+            
+            # Also show the normal (current heading) rotated by 180 to visualize the back direction
+            back_heading = -current_heading
+            self.render_vector(
+                origin=origin, 
+                vector=back_heading, 
+                color=[1.0, 0.0, 0.0, 0.5], 
                 radius=0.02, 
                 scale=0.5 
             )

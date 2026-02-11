@@ -3,16 +3,14 @@ Test script for the self-balancing robot environment using a trained SAC model.
 """
 import os
 import json
-import shutil
 import tarfile
-import argparse
-import gymnasium as gym
+import numpy as np
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
 from src.env.wrappers.observations import ObservationWrapper
 from src.env.robot import SelfBalancingRobotEnv
 from src.utils.files import compress_and_remove
 from src.utils.parser import parse_test_arguments, parse_model
+from src.env.control.pose_control import PoseControl
 
 
 def make_env(environment_path="./models/scene.xml", max_time=float("inf")):
@@ -93,15 +91,35 @@ if __name__ == "__main__":
         os.rename(f"{POLICY_FOLDER_PATH}/{POLICY}.json", CONFIG_PATH)
 
     if INTERACTIVE:
-        import hid
-        # Attempt to open the joystick device
-        try:
-            joystick = hid.device()
-            joystick.open(VENDOR_ID, PRODUCT_ID)
-            print("Joystick opened successfully.")
-        except Exception as e:
-            print(f"Error opening joystick: {e}")
-            INTERACTIVE = False
+        from pynput import keyboard
+
+        keys_pressed: set = set()
+
+        def _on_press(key):
+            try:
+                keys_pressed.add(key.char.lower())
+            except AttributeError:
+                keys_pressed.add(key)  # special keys (arrows, etc.)
+
+        def _on_release(key):
+            try:
+                keys_pressed.discard(key.char.lower())
+            except AttributeError:
+                keys_pressed.discard(key)
+
+        _kb_listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
+        _kb_listener.daemon = True
+        _kb_listener.start()
+
+        # Tuning parameters for arrow-key control
+        TURN_RATE  = np.deg2rad(3)   # rotation per step when Left/Right is held
+        SPEED_STEP = 0.02            # speed increment per step when Up/Down is held
+        MAX_SPEED  = 1.5             # m/s
+
+        print("Arrow-key control enabled:")
+        print("  Up / Down    = increase / decrease speed")
+        print("  Left / Right = turn left / right")
+        print("  R            = reset heading & speed")
 
     print("Test configuration:")
     print(f"  - Model: {POLICY}")
@@ -125,16 +143,50 @@ if __name__ == "__main__":
     model = MODEL.load(POLICY_PATH, env=env)
     print(f"Loaded model: {POLICY_PATH} ")
 
+    # Heading update configuration
+    HEADING_UPDATE_INTERVAL = 100  # Update heading every N steps
+
+    # Access the unwrapped environment to get pose_control
+    base_env: SelfBalancingRobotEnv = env.unwrapped  # type: ignore
+    pose_control: PoseControl = base_env.pose_control
+
     obs, _ = env.reset()
-    for _ in range(args.test_steps):
+    pose_control.generate_random_heading()
+
+    for step in range(args.test_steps):
+        # ---- Heading / speed update ----
+        if INTERACTIVE:
+            # Arrow-key control
+            if keyboard.Key.left in keys_pressed:
+                angle = pose_control.heading_angle + TURN_RATE
+                pose_control.heading_angle = np.array([np.cos(angle), np.sin(angle)])
+            if keyboard.Key.right in keys_pressed:
+                angle = pose_control.heading_angle - TURN_RATE
+                pose_control.heading_angle = np.array([np.cos(angle), np.sin(angle)])
+            if keyboard.Key.up in keys_pressed:
+                pose_control._speed = min(pose_control._speed + SPEED_STEP, MAX_SPEED)
+            if keyboard.Key.down in keys_pressed:
+                pose_control._speed = max(pose_control._speed - SPEED_STEP, 0.0)
+            if 'r' in keys_pressed:
+                pose_control.reset()
+        else:
+            # Automatic random heading updates
+            if step > 0 and step % HEADING_UPDATE_INTERVAL == 0:
+                old_angle = np.degrees(pose_control.heading_angle)
+                pose_control.update_heading()
+                new_angle = np.degrees(pose_control.heading_angle)
+
         action, _states = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, _ = env.step(action)
         try:
             env.render()
         except Exception as e:
+            print(f"Rendering error: {e}")
             env.close()
             break
         if terminated or truncated:
             obs, _ = env.reset()
+            pose_control.generate_random_heading()
+            print(f"[Step {step}] Reset — new heading angle: {np.degrees(pose_control.heading_angle):.1f}°")
 
     compress_and_remove(POLICY_FOLDER_PATH)
