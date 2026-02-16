@@ -362,7 +362,15 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()
             finally:
-                eval_env.close()
+                # Forza la chiusura dell'ambiente e del viewer
+                if 'eval_env' in locals():
+                    eval_env.close()
+                    # Se l'env ha un attributo viewer (comune in MuJoCo), lo chiudiamo esplicitamente
+                    if hasattr(eval_env.unwrapped, 'viewer') and eval_env.unwrapped.viewer is not None:
+                        eval_env.unwrapped.viewer.close()
+                
+                # Piccola pausa per dare tempo al sistema operativo di liberare la memoria grafica
+                time.sleep(1) 
                 del eval_env
 
     print("\n--- Training Loop Complete ---")
