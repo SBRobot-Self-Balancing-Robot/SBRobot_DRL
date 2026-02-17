@@ -14,7 +14,7 @@ class VelocityControl(BaseControl):
     """
     
     # Default ranges for random generation
-    DEFAULT_SPEED_RANGE: T.Tuple[float, float] = (-1.5, 1.5) # rad/s
+    DEFAULT_SPEED_RANGE: T.Tuple[float, float] = (-3, 3) # rad/s
 
     # Curriculum settings
     CURRICULUM_PHASES: T.List[T.Tuple[float, float]] = [

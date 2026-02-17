@@ -36,7 +36,7 @@ class SelfBalancingRobotEnv(gym.Env):
         self.frame_skip = frame_skip    # Number of frames to skip in each step  
         self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
         # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
         
         # Action space
         ctrl_ranges = self.model.actuator_ctrlrange
@@ -53,9 +53,6 @@ class SelfBalancingRobotEnv(gym.Env):
         # Initialize the environment attributes
         self.max_pitch = max_pitch # Maximum pitch angle before truncation
         self.setpoint = [0.0, 0.0] # [velocity_setpoint, angular_velocity_setpoint (steering)]        
-
-        # Offset angle at the beginning of the simulation
-        self.offset_angle = self._get_offset()
 
         # Save initial masses for randomization
         self.initial_masses = self.model.body_mass.copy()
@@ -137,55 +134,42 @@ class SelfBalancingRobotEnv(gym.Env):
 
         mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
         self._initialize_random_state()
-        return [], {}    
-
-    def _get_offset(self) -> float:
+        return [], {}
+    
+    def _get_chassis_orientation(self) -> T.Tuple[float, float, float]:
         """
-        Get the initial offset angles of the robot's body in Euler angles (roll, pitch, yaw) 
-        wrt the ideal 0 position of the robot.
+        Get the chassis orientation in Euler angles (roll, pitch, yaw).
         
         Returns:
-            T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the robot's body.
+            T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the chassis.
         """
-        mujoco.mj_kinematics(self.model, self.data)
-        chassis_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Chassis")
-        wheel_L_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "WheelL")
-        com_total = self.data.subtree_com[chassis_id]
-        pivot_pos = self.data.xpos[wheel_L_id] 
-        
-        dx = com_total[0] - pivot_pos[0]
-        dz = com_total[2] - pivot_pos[2]
-        
-        angle_rad = -np.arctan2(dx, dz)
-        
-        return angle_rad
+        quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])  # scipy wants [x, y, z, w]
+        return r.as_euler('xyz', degrees=False)  # in radians
 
     # Environment termination and truncation conditions
     def _is_terminated(self) -> bool:
         """
-        Check if the episode is terminated.
+        Terminate the episode if the robot's pitch exceeds the maximum allowed value.
         
         Returns:
             bool: True if the episode is terminated, False otherwise.
         """
-        # Terminated when the robot falls or the maximum time is reached
-        return self._is_truncated() or self.data.time >= self.max_time
-    
-    def _is_truncated(self) -> bool:
-        """
-        Truncate the episode if the robot's pitch exceeds the maximum allowed value.
-        
-        Returns:
-            bool: True if the episode is truncated, False otherwise.
-        """
-        quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
-        _, pitch, _ = r.as_euler('xyz', degrees=False) # in radians
+        _, pitch, _ = self._get_chassis_orientation()
         
         return bool(
             abs(pitch) > self.max_pitch
             )
+    
+    def _is_truncated(self) -> bool:
+        """
+        Truncate the episode if the time exceeds the maximum allowed value.
 
+        Returns:
+            bool: True if the episode is truncated, False otherwise.
+        """
+        return self.data.time >= self.max_time
+    
     # Initialize and randomization methods
     def _space_positioning(self):
         """
@@ -320,9 +304,6 @@ class SelfBalancingRobotEnv(gym.Env):
 
         # Reset pose control
         self.pose_control.reset()
-
-        # Initialize accelerometer initial calibration scale
-        self.accel_calib_scale = 1.0 + np.random.uniform(-0.03, 0.03, size=3)
         
     def render(self, mode='human'):
         """

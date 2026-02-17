@@ -31,9 +31,9 @@ class RewardWrapper(gym.Wrapper):
 
         reward += self.reward_calculator.compute_reward(self.env) # type: ignore
 
-        if terminated and not truncated:
+        if truncated and not terminated:
             reward += 50
-        elif truncated:
+        elif terminated:
             reward -= 200 * (1 - (self.env.env.data.time / self.env.env.max_time))
 
         return obs, reward, terminated, truncated, info
@@ -57,7 +57,7 @@ class RewardCalculator:
     """
     def __init__(self, 
                     heading_weight: float = 3.0, 
-                    velocity_weight: float = 1.0, 
+                    velocity_weight: float = 2.0, 
                     control_variety_weight: float = 1.0):
         self.heading_weight = heading_weight
         self.velocity_weight = velocity_weight
@@ -80,35 +80,39 @@ class RewardCalculator:
         return env.env.pose_control.error(forward_vector)
     
     def _velocity_error(self, env: SelfBalancingRobotEnv) -> float:
-        # Index of the velocity sensor
+        # 1. Recupera i dati del sensore (VELOCITÀ LOCALE)
         vel_id = mujoco.mj_name2id(env.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "body_vel") 
-
-        # Address of the velocity sensor data
         vel_adr = env.env.model.sensor_adr[vel_id]
-
-        # Velocity sensor data (vector [vx, vy, vz])
-        vel_data = env.env.data.sensordata[vel_adr : vel_adr + 3]
+        vel_local = env.env.data.sensordata[vel_adr : vel_adr + 3] # [vx_local, vy_local, vz_local]
         
-        # --- CORREZIONE QUI SOTTO ---
-        
-        # 1. Recuperiamo l'orientamento attuale (Rotazione)
+        # 2. Recupera l'orientamento (Quaternione)
         quat = env.env.data.qpos[3:7]  # [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # [x, y, z, w]
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Scipy vuole [x, y, z, w]
+        
+        # 3. Trasforma la velocità da LOCALE a GLOBALE (World Frame)
+        # Questa operazione applica la rotazione del robot al vettore velocità
+        vel_world = r.apply(vel_local) # Ora abbiamo [vx_world, vy_world, vz_world]
+        
+        # 4. Calcoliamo la direzione in cui il robot sta guardando (Heading)
+        # Prendiamo l'asse X locale (1, 0, 0) e lo ruotiamo nel mondo
+        # Nota: corrisponde alla prima colonna della matrice di rotazione
         rot_matrix = r.as_matrix()
+        robot_forward_vector = rot_matrix[:, 0] # Vettore direzione nel mondo 3D
         
-        # 2. Estraiamo il vettore "Forward" del robot (Asse X locale espresso nel mondo)
-        # La colonna 0 della matrice di rotazione rappresenta l'asse X del body nel world frame
-        robot_forward_vector = rot_matrix[:, 0] 
-        
-        # 3. Calcoliamo la velocità proiettata sulla direzione del robot (Dot Product)
-        # v_forward = |v| * cos(theta)
-        # Questo gestisce automaticamente il segno.
-        current_speed_projected = np.dot(vel_data, robot_forward_vector)
-        
-        # Se vuoi considerare solo la velocità sul piano orizzontale (ignorando salti/cadute):
-        # current_speed_projected = np.dot(vel_data[:2], robot_forward_vector[:2])
+        # Proiettiamo sul piano orizzontale (Z=0) per ignorare il beccheggio (pitch)
+        forward_ground_vector = robot_forward_vector[:2]
+        norm = np.linalg.norm(forward_ground_vector)
+        if norm > 1e-6:
+            forward_ground_vector /= norm
+        else:
+            forward_ground_vector = np.zeros(2)
 
-        return env.env.velocity_control.error(current_speed_projected)
+        # 5. Calcoliamo la velocità effettiva di avanzamento AL SUOLO
+        # Facciamo il prodotto scalare tra la velocità World (xy) e la direzione Heading (xy)
+        current_ground_speed = np.dot(vel_world[:2], forward_ground_vector)
+
+        # Restituiamo l'errore rispetto al setpoint
+        return env.env.velocity_control.error(current_ground_speed)
     
     def _pitch(self, env: SelfBalancingRobotEnv) -> float:
         quat = env.env.data.qpos[3:7]  # Assuming the quaternion is in the order [w, x, y, z]
@@ -143,20 +147,26 @@ class RewardCalculator:
         velocity_reward = self.velocity_weight * (1.0 - abs(velocity_error)) * heading_gate
 
         # --- 4. Control smoothness penalty ---
-        smoothness_penalty = self.control_variety_weight * np.linalg.norm(ctrl_variation)
+        smoothness_penalty = -self.control_variety_weight * np.linalg.norm(ctrl_variation)
 
         # --- 5. Precision bonuses ---
         # Heading-only bonus: strong incentive for near-perfect heading alignment
-        heading_bonus = self._kernel(heading_error, 0.005)
+        heading_bonus = self._kernel(heading_error, 0.01)
+
+        # --- 6. Balance bonus: reward for maintaining low pitch angles (stability) ---
+        balance_bonus = self._kernel(pitch, 0.05)
+
+        # --- 7. Speed bonus ---
+        speed_bonus = self._kernel(velocity_error, 0.01)
 
         # Combined bonus: rewards simultaneous precision on heading + velocity + low ctrl
-        combined_bonus = self._kernel(np.linalg.norm(ctrl), 0.01) \
+        combined_bonus = self._kernel(np.linalg.norm(ctrl), 0.5) \
                        * self._kernel(heading_error, 0.005) \
                        * self._kernel(velocity_error, 0.005)
 
         reward = heading_reward \
                + velocity_reward \
-               - smoothness_penalty \
+               + smoothness_penalty \
                + heading_bonus \
                + combined_bonus
 

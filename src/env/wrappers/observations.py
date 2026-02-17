@@ -232,6 +232,9 @@ class ObservationWrapper(gym.Wrapper):
         # Pitch: Normalized over 90 degrees (pi/2)
         norm_pitch = self._normalize_value(self.pitch, np.pi/2)
 
+        # Yaw normalized over 180 degrees (pi)
+        norm_yaw = self._normalize_value(self.yaw, np.pi)
+
         # Angular Velocities (Gyro): Normalized over Full Scale Range (FSR)
         norm_w_y = self._normalize_value(self.angular_velocity[1], FSR_GYRO * DEG2RAD) # Pitch rate (real)
         norm_w_z = self._normalize_value(self.angular_velocity[2], FSR_GYRO * DEG2RAD) # Yaw rate (real)
@@ -239,6 +242,8 @@ class ObservationWrapper(gym.Wrapper):
         # Wheel Speeds: Normalized over maximum speed
         norm_wheel_left_vel = self._normalize_value(self.wheels_velocity[0], MAX_WHEEL_SPEED)
         norm_wheel_right_vel = self._normalize_value(self.wheels_velocity[1], MAX_WHEEL_SPEED)
+
+        norm_avg_wheel_vel = (norm_wheel_left_vel + norm_wheel_right_vel) / 2
 
         # Normalize control commands
         norm_ctrl_left = self._normalize_value(self.ctrl[0], MAX_WHEEL_SPEED)
@@ -260,9 +265,12 @@ class ObservationWrapper(gym.Wrapper):
             heading_error = 0.0
         
         if self.env.velocity_control.speed != 0.0:
-            velocity_error = self.env.velocity_control.error((norm_wheel_left_vel + norm_wheel_right_vel)/2) # type: ignore
+            velocity_error = self.env.velocity_control.error((self.wheels_velocity[0] + self.wheels_velocity[1])/2) # type: ignore
         else:
             velocity_error = 0.0
+        
+        speed_setpoint = self.env.velocity_control.speed
+        steering_setpoint = self.env.pose_control.heading
         
         # --- 5. Construct Observation Vector ---
         obsv = np.array([
@@ -271,20 +279,25 @@ class ObservationWrapper(gym.Wrapper):
             norm_w_y,                   # 2. Pitch Dynamics
 
             # Yaw dynamics
-            norm_w_z,                   # 3. Yaw Dynamics
+            #norm_yaw,                   # 3. Yaw Angle
+            norm_w_z,                   # 4. Yaw Dynamics
             
             # Wheels dynamics
-            norm_ctrl_left,             # 4. Left Motor Command
-            norm_ctrl_right,            # 5. Right Motor Command
-            self.ctrl_variation[0],     # 6. Left Motor Command Variation
-            self.ctrl_variation[1],     # 7. Right Motor Command Variation
+            norm_ctrl_left,             # 5. Left Motor Command
+            norm_ctrl_right,            # 6. Right Motor Command
+            self.ctrl_variation[0],     # 7. Left Motor Command Variation
+            self.ctrl_variation[1],     # 8. Right Motor Command Variation
 
             # Wheels velocities
-            norm_wheel_left_vel,        # 8. Left Wheel Velocity
-            norm_wheel_right_vel,       # 9. Right Wheel Velocity
+            norm_avg_wheel_vel,           # 9. Average Wheel Speed
             
-            heading_error,              # 11. Heading Error (Direction)
-            self.env.velocity_control.speed
+            # Setpoints
+            speed_setpoint,             # 10. Speed Setpoint
+            steering_setpoint[0],       # 11. Steering Setpoint (X component of the heading vector)
+
+            # Errors
+            heading_error,              # 12. Heading Error (Direction)
+            velocity_error              # 13. Velocity Error
 
         ], dtype=np.float32)
 
