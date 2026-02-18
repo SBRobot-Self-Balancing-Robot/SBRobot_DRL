@@ -56,9 +56,9 @@ class RewardCalculator:
     then track the desired velocity. Velocity reward is gated by heading accuracy.
     """
     def __init__(self, 
-                    heading_weight: float = 3.0, 
-                    velocity_weight: float = 2.0, 
-                    control_variety_weight: float = 1.0):
+                    heading_weight: float = 1.0, 
+                    velocity_weight: float = 1.6, 
+                    control_variety_weight: float = 0.2):
         self.heading_weight = heading_weight
         self.velocity_weight = velocity_weight
         self.control_variety_weight = control_variety_weight
@@ -141,10 +141,10 @@ class RewardCalculator:
 
         # --- 2. Heading gate: [0, 1] factor that suppresses velocity reward when heading is poor ---
         #    gate ≈ 1 when |heading_error| ≈ 0, gate → 0 when |heading_error| is large
-        heading_gate = self._kernel(heading_error, 0.05)
+        heading_gate = self._kernel(heading_error, 0.15)
 
         # --- 3. Velocity reward (gated by heading accuracy) ---
-        velocity_reward = self.velocity_weight * (1.0 - abs(velocity_error)) * heading_gate
+        velocity_reward = self.velocity_weight * (1.0 - abs(velocity_error))
 
         # --- 4. Control smoothness penalty ---
         smoothness_penalty = -self.control_variety_weight * np.linalg.norm(ctrl_variation)
@@ -159,6 +159,10 @@ class RewardCalculator:
         # --- 7. Speed bonus ---
         speed_bonus = self._kernel(velocity_error, 0.01)
 
+        # --- 8. Control Difference Bonus ---
+        ctrl_difference = ctrl[0] - ctrl[1]  # Assuming ctrl[0] is left wheel and ctrl[1] is right wheel
+        ctrl_difference_bonus = self._kernel(ctrl_difference, 0.05)
+
         # Combined bonus: rewards simultaneous precision on heading + velocity + low ctrl
         combined_bonus = self._kernel(np.linalg.norm(ctrl), 0.5) \
                        * self._kernel(heading_error, 0.005) \
@@ -167,9 +171,8 @@ class RewardCalculator:
         reward = heading_reward \
                + velocity_reward \
                + smoothness_penalty \
-               + heading_bonus \
-               + combined_bonus
-
+               + heading_bonus * speed_bonus
+        
         return reward # type: ignore
 
     def _kernel(self, x: float, alpha: float) -> float:

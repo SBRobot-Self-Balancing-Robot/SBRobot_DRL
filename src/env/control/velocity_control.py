@@ -4,43 +4,42 @@ from src.env.control.base_control import BaseControl
 
 class VelocityControl(BaseControl):
     """
-    This class handles the random generation of the desired linear velocity for the robot to follow.
-    Supports curriculum learning by progressively widening the speed range during training.
-
-    Curriculum advancement is based on **cross-episode success rate**:
-    the robot must survive (reach max_time without falling) consistently
-    before the velocity range is widened. This ensures Phase 0 (balance only)
-    actually teaches stability before introducing velocity commands.
+    Handles the generation of the desired linear velocity for the robot.
+    
+    STRATEGY: "Time-based Step Function with Zero Bias"
+    - Changes target based on time intervals, not performance.
+    - Uses a high probability of selecting 0.0 speed to reinforce static balancing.
+    - Uses Curriculum Learning to progressively widen the max speed range.
     """
     
-    # Default ranges for random generation
-    DEFAULT_SPEED_RANGE: T.Tuple[float, float] = (-3, 3) # rad/s
-
-    # Curriculum settings
+    # Curriculum settings: Ranges for random generation [min, max]
+    # NOTE: Phase 0 is no longer (0,0). We start with small movements allowed.
+    # The static balance is now handled by ZERO_PROBABILITY.
     CURRICULUM_PHASES: T.List[T.Tuple[float, float]] = [
-        (0.0,  0.0),     # Phase 0: No velocity command (balance only)
-        (-0.3, 0.3),     # Phase 1: Slow movements
-        (-0.7, 0.7),     # Phase 2: Medium movements
-        (-1.5, 1.5),     # Phase 3: Full range
+        (-0.5, 0.5),     # Phase 0: Slow movements
+        (-1.0, 1.0),     # Phase 1: Medium movements
+        (-2.0, 2.0),     # Phase 2: Fast movements
+        (-3.0, 3.0),     # Phase 3: Full range
     ]
 
     # Curriculum advancement settings (cross-episode)
-    CURRICULUM_WINDOW: int = 50                          # Number of recent episodes to evaluate
-    CURRICULUM_SUCCESS_THRESHOLD: float = 0.8            # Required success rate to advance (80%)
+    CURRICULUM_WINDOW: int = 50                          
+    CURRICULUM_SUCCESS_THRESHOLD: float = 0.8            
 
-    # Incremental update settings (intra-episode)
-    DEFAULT_DELTA_RANGE: T.Tuple[float, float] = (-0.15, 0.15)  # Max incremental change per update
+    # Update settings
+    ZERO_PROBABILITY: float = 0.4  # 40% chance to pick exactly 0.0 as target
+    MIN_HOLD_TIME: float = 2.0     # Min seconds to hold a target
+    MAX_HOLD_TIME: float = 5.0     # Max seconds to hold a target
 
     def __init__(self):
         super().__init__()
-        self._speed = 0.0                               # Desired speed (rad/s)
-        self._curriculum_phase: int = 0                  # Current curriculum phase index
-        self._hold_steps: int = 0                        # Counter: steps the current target has been held
-        self._min_hold_steps: int = 50                   # Minimum steps before the target can change
-        self._velocity_error_threshold: float = 0.1      # Error threshold to consider target "reached"
-        self._consecutive_good_steps: int = 0            # Steps with error below threshold
-        self._good_steps_required: int = 20              # Consecutive good steps required to allow change
-        self._episode_results: T.List[bool] = []         # Rolling window of episode outcomes (True=success)
+        self._speed = 0.0                               
+        self._curriculum_phase: int = 0                  
+        self._episode_results: T.List[bool] = []         
+        
+        # Timer variables
+        self._timer: float = 0.0
+        self._time_to_switch: float = 0.0
 
     # ------------------------------------------------------------------ #
     #                         PROPERTIES                                  #
@@ -72,17 +71,6 @@ class VelocityControl(BaseControl):
         return self.CURRICULUM_PHASES[self._curriculum_phase]
 
     @property
-    def hold_steps(self) -> int:
-        """Get the number of steps the current target has been held."""
-        return self._hold_steps
-
-    @property
-    def is_ready_to_change(self) -> bool:
-        """Check if enough hold time has passed AND the target has been tracked well."""
-        return (self._hold_steps >= self._min_hold_steps and 
-                self._consecutive_good_steps >= self._good_steps_required)
-
-    @property
     def success_rate(self) -> float:
         """Success rate over the recent episode window."""
         if not self._episode_results:
@@ -93,92 +81,64 @@ class VelocityControl(BaseControl):
     #                    UPDATE / GENERATION METHODS                      #
     # ------------------------------------------------------------------ #
     
-    def update(self, current_speed: float = 0.0, heading_error: float = 0.0) -> None:
+    def update(self, dt: float, current_speed: float = 0.0, heading_error: float = 0.0) -> None:
         """
-        Incremental update of the velocity target within the current episode.
-
-        - In Phase 0 (balance only): speed is forced to 0, no perturbations.
-        - In later phases: tracks hold time and consecutive "good" steps,
-          then applies small perturbations within the current phase range.
-        - Curriculum advancement is NOT done here; it is driven by
-          cross-episode success rate via `report_episode_result()`.
-
+        Updates the target velocity based on a timer.
+        
         Args:
-            current_speed: The current average wheel speed (rad/s).
-            heading_error: The current heading error (radians), used for coupling.
+            dt: Time step duration (seconds).
+            current_speed: (Unused in this strategy, kept for interface compatibility)
+            heading_error: (Unused in this strategy, kept for interface compatibility)
         """
-        self._hold_steps += 1
+        self._timer += dt
 
-        # Phase 0: balance only — force speed to 0, skip everything else
-        if self._curriculum_phase == 0:
-            self._speed = 0.0
-            return
+        # Time to switch target?
+        if self._timer >= self._time_to_switch:
+            self._generate_next_target()
+            self._reset_timer()
 
-        # Track consecutive steps with small velocity error
-        vel_error = abs(self.error(current_speed))
-        if vel_error < self._velocity_error_threshold:
-            self._consecutive_good_steps += 1
-        else:
-            self._consecutive_good_steps = 0
-
-        # Attenuate speed when heading error is large (coupling)
-        if abs(heading_error) > 0.3:
-            self._speed *= 0.95
-
-        # If ready, apply a small incremental change (no curriculum advance)
-        if self.is_ready_to_change:
-            self._apply_incremental_change()
-            self._hold_steps = 0
-            self._consecutive_good_steps = 0
-
-    def _apply_incremental_change(self) -> None:
+    def _generate_next_target(self) -> None:
         """
-        Apply a small random perturbation to the current speed target,
-        clamped within the current curriculum phase range.
+        Generates a new target speed with a bias towards zero.
         """
         low, high = self.current_range
-        # If phase 0 (balance only), keep speed at 0
-        if low == 0.0 and high == 0.0:
+        
+        # Roll a die to see if we should stop (Zero Bias)
+        if np.random.random() < self.ZERO_PROBABILITY:
             self._speed = 0.0
-            return
+        else:
+            # Otherwise, pick a random speed in the current curriculum range
+            self._speed = float(np.random.uniform(low, high))
 
-        delta = float(np.random.uniform(*self.DEFAULT_DELTA_RANGE))
-        new_speed = self._speed + delta
-        self._speed = float(np.clip(new_speed, low, high))
+    def _reset_timer(self) -> None:
+        """Resets the timer with a random duration."""
+        self._timer = 0.0
+        self._time_to_switch = np.random.uniform(self.MIN_HOLD_TIME, self.MAX_HOLD_TIME)
 
     def generate_random(self,
             low: T.Optional[float] = None,
             high: T.Optional[float] = None) -> float:
         """
-        Generate a random speed uniformly sampled within [low, high].
-        If not specified, uses the current curriculum phase range.
-
-        Args:
-            low:  Minimum speed (default: current phase low).
-            high: Maximum speed (default: current phase high).
-
-        Returns:
-            float: The new desired speed.
+        Force a random target generation immediately.
+        Arguments low/high are mostly ignored by internal logic in favor of curriculum,
+        but kept for compatibility if manual override is needed.
         """
-        phase_low, phase_high = self.current_range
-        low = low if low is not None else phase_low
-        high = high if high is not None else phase_high
-        self._speed = float(np.random.uniform(low, high))
-        self._hold_steps = 0
-        self._consecutive_good_steps = 0
+        if low is not None and high is not None:
+             self._speed = float(np.random.uniform(low, high))
+        else:
+            self._generate_next_target()
+            
+        self._reset_timer()
         return self._speed
+
+    # ------------------------------------------------------------------ #
+    #                  CURRICULUM & RESET METHODS                         #
+    # ------------------------------------------------------------------ #
 
     def report_episode_result(self, success: bool) -> None:
         """
-        Report whether the last episode was successful (survived full duration).
-        Called by the environment at each reset.
-
-        When the success rate over the last CURRICULUM_WINDOW episodes exceeds
-        CURRICULUM_SUCCESS_THRESHOLD, the curriculum advances to the next phase
-        and the episode history is cleared to start fresh evaluation.
-
-        Args:
-            success: True if the episode reached max_time without falling.
+        Report whether the last episode was successful.
+        Updates curriculum based on success rate.
         """
         self._episode_results.append(success)
         # Keep only the latest window
@@ -192,41 +152,24 @@ class VelocityControl(BaseControl):
                 self._episode_results.clear()  # Reset tracking for new phase
 
     def _advance_curriculum(self) -> int:
-        """
-        Advance to the next curriculum phase (if available).
-        Internal method — advancement is driven by `report_episode_result()`.
-        
-        Returns:
-            int: The new curriculum phase index.
-        """
+        """Advance to the next curriculum phase (if available)."""
         if self._curriculum_phase < len(self.CURRICULUM_PHASES) - 1:
             self._curriculum_phase += 1
+            # Optional: print debug info
+            # print(f"*** CURRICULUM ADVANCED TO PHASE {self._curriculum_phase}: Range {self.current_range} ***")
         return self._curriculum_phase
 
-    # ------------------------------------------------------------------ #
-    #                        ERROR METHODS                                #
-    # ------------------------------------------------------------------ #
-
     def error(self, current_speed: float) -> float:
-        """
-        Compute the speed error between the desired speed and the current speed.
-
-        Args:
-            current_speed: The current speed of the robot (rad/s).
-        Returns:
-            float: The speed error (desired - current).
-        """
+        """Compute the speed error."""
         return self._speed - current_speed
     
-    # ------------------------------------------------------------------ #
-    #                        RESET                                        #
-    # ------------------------------------------------------------------ #
-
     def reset(self) -> None:
-        """Reset velocity control state (keeps curriculum phase and episode history)."""
-        self._speed = 0.0
-        self._hold_steps = 0
-        self._consecutive_good_steps = 0
+        """
+        Reset for new episode. 
+        IMPORTANT: Immediately pick a target (maybe 0, maybe moving)
+        to prevent 'start-from-zero' overfitting.
+        """
+        self.generate_random()
 
     def full_reset(self) -> None:
         """Reset everything, including curriculum phase and episode history."""
@@ -234,11 +177,8 @@ class VelocityControl(BaseControl):
         self._curriculum_phase = 0
         self._episode_results.clear()
         
-    # ------------------------------------------------------------------ #
-    #                         DUNDER METHODS                             #
-    # ------------------------------------------------------------------ #
     def __repr__(self) -> str:
         phase_range = self.current_range
-        return (f"VelocityControl(speed={self._speed:.2f} rad/s, "
-                f"phase={self._curriculum_phase} [{phase_range[0]:.1f}, {phase_range[1]:.1f}], "
-                f"hold={self._hold_steps})")
+        return (f"VelocityControl(speed={self._speed:.2f}, "
+                f"timer={self._timer:.1f}/{self._time_to_switch:.1f}, "
+                f"phase={self._curriculum_phase} {phase_range})")

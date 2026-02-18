@@ -98,6 +98,7 @@ class SelfBalancingRobotEnv(gym.Env):
             # Update velocity control: tracks hold time, checks convergence,
             # applies incremental changes, and attenuates speed when heading error is large
             self.velocity_control.update(
+                dt=self.time_step, 
                 current_speed=current_avg_speed,
                 heading_error=heading_error
             )
@@ -207,8 +208,10 @@ class SelfBalancingRobotEnv(gym.Env):
         # Reset ctrl inputs
         self.data.ctrl[:] = 0.0
 
-        # Reset speeds
-        self.data.qvel[:] = 0.0
+        # Set speeds
+        self.data.qvel[2] = 0.0
+        self.data.qvel[:2] = np.random.uniform(-0.1, 0.1, size=2) # Piccola spinta iniziale
+        self.velocity_control.generate_random()
 
         # Reset past values
         self.past_pitch = 0.0
