@@ -1,170 +1,147 @@
 import numpy as np
 import typing as T
-from src.utils.math import signed_sin
 from scipy.spatial.transform import Rotation as R
 from src.env.control.base_control import BaseControl
 
 
 class PoseControl(BaseControl):
     """
-    This class handles the random generation of the heading vector 
-    and the target point for the robot to follow.
+    Generates heading references as 2D unit vectors with timer-based switching.
+
+    Every [MIN_HOLD_TIME, MAX_HOLD_TIME] seconds a new target heading is sampled
+    uniformly from [-π, π].  Heading error is the signed angle (atan2) from the
+    target to the robot's current forward direction, in radians ∈ (-π, π].
+    Positive error → current heading is CCW of target → robot must turn CW (right).
     """
 
-    def __init__(self):
-        super().__init__()
-        self._heading = np.array([0.0, 0.0])          # Unit heading vector (pointing along x-axis)
+    MIN_HOLD_TIME: float = 3.0  # s
+    MAX_HOLD_TIME: float = 8.0  # s
 
-        # Hold mechanism: keep heading stable for a minimum number of steps
-        self._hold_steps: int = 0                      # Counter: steps the current heading has been held
-        self._min_hold_steps: int = 50                  # Minimum steps before heading can change
-        self._heading_error_threshold: float = 0.1     # Error threshold to consider heading "reached"
-        self._consecutive_good_steps: int = 0          # Steps with error below threshold
-        self._good_steps_required: int = 20            # Consecutive good steps required to allow change
+    def __init__(self) -> None:
+        super().__init__()
+        self._heading: np.ndarray = np.array([1.0, 0.0])  # [cos θ, sin θ]
+        self._timer: float = 0.0
+        self._time_to_switch: float = 0.0
 
     # ------------------------------------------------------------------ #
-    #                         PROPERTIES                                  #
+    #  Properties                                                          #
     # ------------------------------------------------------------------ #
 
     @property
     def heading(self) -> np.ndarray:
-        """Get the heading unit vector (2D)."""
-        return self._heading
+        """Current target heading unit vector [cos θ, sin θ]."""
+        return self._heading.copy()
 
     @heading.setter
-    def heading(self, value: np.ndarray) -> None:
-        """Set the heading vector. It will be normalised automatically."""
-        value = np.asarray(value, dtype=np.float64)
-        norm = np.linalg.norm(value)
-        if norm < 1e-8:
-            raise ValueError("Heading vector cannot be zero.")
-        self._heading = value / norm
+    def heading(self, vec: np.ndarray) -> None:
+        """Set heading from a 2D vector (normalised automatically)."""
+        v = np.asarray(vec, dtype=np.float64).flatten()[:2]
+        n = np.linalg.norm(v)
+        self._heading = v / n if n > 1e-6 else np.array([1.0, 0.0])
 
     @property
     def heading_angle(self) -> float:
-        """Get the heading yaw angle in radians (atan2 of y/x component)."""
+        """Target heading as yaw angle [rad]."""
         return float(np.arctan2(self._heading[1], self._heading[0]))
 
     @heading_angle.setter
-    def heading_angle(self, versor: np.ndarray) -> None:
-        """Set the heading from a yaw angle (radians). Z component is kept at 0."""
-        self._heading = np.array([versor[0], versor[1]])
-
-    @property
-    def hold_steps(self) -> int:
-        """Get the number of steps the current heading has been held."""
-        return self._hold_steps
-
-    @property
-    def is_ready_to_change(self) -> bool:
-        """Check if enough hold time has passed AND the heading has been tracked well."""
-        return (self._hold_steps >= self._min_hold_steps and
-                self._consecutive_good_steps >= self._good_steps_required)
+    def heading_angle(self, angle: float) -> None:
+        """Set heading from a yaw angle [rad] (used for interactive / test control)."""
+        self._heading = np.array([np.cos(float(angle)), np.sin(float(angle))])
 
     # ------------------------------------------------------------------ #
-    #                    RANDOM GENERATION METHODS                        #
+    #  Update / generation                                                 #
     # ------------------------------------------------------------------ #
 
-    def update(self, heading_error: float = 0.0) -> None:
-        """
-        Update the heading with a hold mechanism.
+    def update(self, dt: float) -> None:
+        """Advance the timer; switch to a new random heading when it expires."""
+        self._timer += dt
+        if self._timer >= self._time_to_switch:
+            self._pick_new_heading()
+            self._reset_timer()
 
-        The heading is kept stable for at least `_min_hold_steps` steps.
-        After that, it can change only when the robot has tracked the current
-        heading well enough (consecutive good steps above threshold).
+    def _pick_new_heading(self) -> None:
+        angle = float(np.random.uniform(-np.pi, np.pi))
+        self._heading = np.array([np.cos(angle), np.sin(angle)])
 
-        Args:
-            heading_error: The current signed heading error (radians).
-        """
-        self._hold_steps += 1
-
-        # Track consecutive steps with small heading error
-        if abs(heading_error) < self._heading_error_threshold:
-            self._consecutive_good_steps += 1
-        else:
-            self._consecutive_good_steps = 0
-
-        # Only apply an incremental change when the hold criteria are met
-        if not self.is_ready_to_change:
-            return
-
-        # Apply a small random perturbation to the heading
-        delta_angle = np.deg2rad(np.random.uniform(-10, 10))
-        current_angle = self.heading_angle
-        new_angle = current_angle + delta_angle
-        self.heading_angle = np.array([np.cos(new_angle), np.sin(new_angle)])
-
-        # Reset hold counters
-        self._hold_steps = 0
-        self._consecutive_good_steps = 0
+    def _reset_timer(self) -> None:
+        self._timer = 0.0
+        self._time_to_switch = float(np.random.uniform(self.MIN_HOLD_TIME, self.MAX_HOLD_TIME))
 
     def generate_random(self) -> np.ndarray:
-        """
-        Generate a random heading direction uniformly sampled on the unit circle (XY plane).
-        
-        Returns:
-            np.ndarray: The new heading unit vector (2D).
-        """
-        yaw = np.random.uniform(-np.pi, np.pi)
-        self._heading = np.array([np.cos(yaw), np.sin(yaw)])
-        self._hold_steps = 0
-        self._consecutive_good_steps = 0
+        """Force an immediate heading change (used on episode reset)."""
+        self._pick_new_heading()
+        self._reset_timer()
         return self._heading.copy()
 
-    # ------------------------------------------------------------------ #
-    #                        UTILITY METHODS                              #
-    # ------------------------------------------------------------------ #
-
-    def error_with_quaternion(self, quat: np.ndarray) -> float:
+    def set_from_quaternion(self, quat_mj: np.ndarray) -> None:
         """
-        Convert a quaternion to a heading unit vector in the XY plane and compute the signed angle error.
+        Align the target heading with the robot's current orientation.
+        Call at episode start so the initial heading error is zero.
 
         Args:
-            quat: A 4D array representing the quaternion (w, x, y, z).
-        Returns:
-            float: The signed angle error in radians.
+            quat_mj: MuJoCo quaternion [w, x, y, z] from data.qpos[3:7].
         """
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
-        rot_matrix = r.as_matrix()
-        # The forward direction in the robot's local frame is typically along the x-axis
-        forward_vector = rot_matrix[:2, 0]  # Get the first column of the rotation
-        # Normalize the forward vector
-        norm = np.linalg.norm(forward_vector)
-        if norm > 1e-6:
-            forward_vector /= norm
-        else:
-            forward_vector = np.array([0.0, 0.0])
-        
-        return self.error(forward_vector)
+        r = R.from_quat([quat_mj[1], quat_mj[2], quat_mj[3], quat_mj[0]])
+        forward_xy = r.as_matrix()[:2, 0]
+        norm = np.linalg.norm(forward_xy)
+        self._heading = forward_xy / norm if norm > 1e-6 else np.array([1.0, 0.0])
+        self._reset_timer()
 
-    def error(
-        self, 
-        direction_vector
-        ) -> float:
-        """
-        Compute the signed angle error between the current heading and a given direction vector.
+    # ------------------------------------------------------------------ #
+    #  Error computation                                                   #
+    # ------------------------------------------------------------------ #
 
-        Args:
-            direction_vector: A 2D vector representing the direction to compare with.
-        Returns:
-            float: Signed angle error in radians, positive if the direction is to the left of the heading.
+    def error_with_quaternion(self, quat_mj: np.ndarray) -> float:
         """
-        dir_vec = np.asarray(direction_vector, dtype=np.float64).flatten()
-        if dir_vec.shape[0] == 2:
-            dir_vec = np.array([dir_vec[0], dir_vec[1]])
-        else:
-            raise ValueError(f"Direction vector must have 2 elements, got {dir_vec.shape[0]}.")
-        return float(signed_sin(self._heading[:2], dir_vec[:2]))
+        Signed heading error from MuJoCo quaternion [w, x, y, z].
+
+        Returns the signed angle (radians, ∈ (-π, π]) from the target heading
+        to the robot's current forward direction (measured CCW in world XY plane).
+        """
+        r = R.from_quat([quat_mj[1], quat_mj[2], quat_mj[3], quat_mj[0]])
+        forward_xy = r.as_matrix()[:2, 0]
+        norm = np.linalg.norm(forward_xy)
+        if norm < 1e-6:
+            return 0.0
+        forward_xy = forward_xy / norm
+        return self._signed_angle(self._heading, forward_xy)
+
+    def error(self, direction_vector: np.ndarray) -> float:
+        """
+        Signed heading error from a 2D direction vector.
+
+        Returns the signed angle (radians, ∈ (-π, π]) from the target heading
+        to the given direction (measured CCW in XY plane).
+        """
+        d = np.asarray(direction_vector, dtype=np.float64).flatten()[:2]
+        norm = np.linalg.norm(d)
+        if norm < 1e-6:
+            return 0.0
+        d = d / norm
+        return self._signed_angle(self._heading, d)
+
+    @staticmethod
+    def _signed_angle(target: np.ndarray, current: np.ndarray) -> float:
+        """
+        Signed angle from target to current (2D unit vectors), using atan2.
+        Unlike sin-only methods, this is unambiguous at ±180°.
+        Positive = current is CCW of target.
+        """
+        sin_err = float(np.cross(target, current))  # sin(θ)
+        cos_err = float(np.dot(target, current))     # cos(θ)
+        return float(np.arctan2(sin_err, cos_err))
+
+    # ------------------------------------------------------------------ #
+    #  Reset                                                               #
+    # ------------------------------------------------------------------ #
 
     def reset(self) -> None:
-        """Reset all pose control parameters to their default values."""
-        self._heading = np.array([1.0, 0.0])
-        self._hold_steps = 0
-        self._consecutive_good_steps = 0
-
-    # ------------------------------------------------------------------ #
-    #                         DUNDER METHODS                             #
-    # ------------------------------------------------------------------ #
+        """Reset to a random heading for the new episode."""
+        self.generate_random()
 
     def __repr__(self) -> str:
-        return (f"PoseControl(heading={self._heading}, angle={np.degrees(self.heading_angle):.1f}°)")
+        return (
+            f"PoseControl(heading={np.degrees(self.heading_angle):.1f}°, "
+            f"timer={self._timer:.1f}/{self._time_to_switch:.1f}s)"
+        )

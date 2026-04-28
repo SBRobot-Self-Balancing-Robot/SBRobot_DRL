@@ -1,179 +1,190 @@
-import mujoco
+"""
+Reward wrapper for the SelfBalancingRobotEnv.
+
+Design philosophy (state-of-the-art for Segway-type robots):
+  • Balance is the primary objective: the robot cannot execute any task if it falls.
+  • Task rewards (velocity + heading) are gated by balance quality so the agent is
+    not rewarded for tracking references while lying on the floor.
+  • Balance and velocity use Gaussian (RBF) kernels for tight precision incentive.
+  • Heading uses a COSINE kernel: (1 + cos(error)) / 2.
+    Unlike a Gaussian, the cosine kernel gives a non-zero gradient at ALL heading
+    errors, including large ones (90°, 180°). A Gaussian with σ=0.30 rad collapses
+    to ≈0 at 45° — giving the policy zero gradient signal when far off-heading.
+    The cosine kernel ensures the policy always receives a useful learning signal.
+  • Ideal sensors are used for reward computation (privileged information):
+    - pitch from ideal quaternion (data.qpos)
+    - forward velocity from ideal wheel-velocity sensors (sensordata[8:10])
+    - heading from ideal quaternion
+  • A fall terminates the episode with a fixed penalty.
+
+Per-step reward structure:
+    r_balance  = exp(-(pitch / σ_p)²)                  ∈ [0, 1]
+    r_velocity = exp(-(vel_error / σ_v)²)               ∈ [0, 1]
+    r_heading  = (1 + cos(heading_error)) / 2           ∈ [0, 1]
+    r_task     = r_balance × (w_b + w_v·r_velocity + w_h·r_heading)
+    r_smooth   = -w_s × mean((Δaction / MAX_CTRL)²)    ≤ 0
+
+    reward = r_task + r_smooth
+
+    On fall (terminated):
+        reward = FALL_PENALTY  (replaces per-step reward)
+
+Per-step reward range: [−0.05, ~4.0] when balanced and tracking well.
+Fall penalty: −20  (5× per-step maximum → strong negative incentive).
+
+Weight breakdown at perfect tracking (r_balance=r_vel=r_heading=1):
+    r_task = 1 × (1 + 1×1 + 2×1) = 4.0
+    Heading only (r_vel=0):  1 × (1 + 0 + 2) = 3.0
+    Velocity only (r_heading=0): 1 × (1 + 1 + 0) = 2.0
+    Balance only (both=0):   1 × 1 = 1.0
+"""
 import numpy as np
 import typing as T
 import gymnasium as gym
-from src.utils.math import signed_sin
 from scipy.spatial.transform import Rotation as R
+
 from src.env.robot import SelfBalancingRobotEnv
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Reward hyper-parameters
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Gaussian kernel widths (σ values) – only used for balance and velocity
+SIGMA_PITCH: float = 0.15  # rad  – half-max at ≈ 8.6°; tight to incentivise balance
+SIGMA_VEL:   float = 0.35  # m/s  – covers full phase-3 range (±0.50 m/s).
+                            # σ=0.25 collapses to ~0 gradient at phase-3 max (0.50 m/s);
+                            # σ=0.35 keeps gradient = -1.17 there.
+
+# Component weights
+W_BALANCE:  float = 1.0   # survival bonus: incentivises staying upright
+W_VELOCITY: float = 1.5   # velocity tracking
+W_HEADING:  float = 2.0   # heading tracking
+W_SMOOTH:   float = 0.15  # increased from 0.05 – penalises oscillations at high speed
+
+# Terminal reward
+FALL_PENALTY: float = -20.0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Reward wrapper
+# ──────────────────────────────────────────────────────────────────────────────
+
 class RewardWrapper(gym.Wrapper):
-    """
-    Wrapper for the SelfBalancingRobotEnv to modify the reward structure.
-    """
-    def __init__(self, env: SelfBalancingRobotEnv):
+    """Computes shaped per-step reward and applies fall penalty."""
+
+    def __init__(self, env) -> None:
         super().__init__(env)
-        self.reward_calculator = RewardCalculator()
+        self._calculator = RewardCalculator()
+        self._prev_action: np.ndarray = np.zeros(2)
 
-    def step(self, action):
-        """
-        Executes one step in the environment with the given action.
-        
-        Args:
-            action: The action to take in the environment.
-        Returns:
-            obs: The observation after taking the action.
-            reward: The modified reward after taking the action.
-            terminated: Whether the episode has ended.
-            truncated: Whether the episode was truncated.
-            info: Additional information from the environment.
-        """
-        obs, reward, terminated, truncated, info = self.env.step(action)
+    def step(self, action: np.ndarray):
+        obs, _, terminated, truncated, info = self.env.step(action)
 
-        reward += self.reward_calculator.compute_reward(self.env) # type: ignore
+        delta_action = action - self._prev_action
+        self._prev_action = action.copy()
 
-        if truncated and not terminated:
-            reward += 50
-        elif terminated:
-            reward -= 200 * (1 - (self.env.env.data.time / self.env.env.max_time))
+        if terminated:
+            reward = FALL_PENALTY
+        else:
+            reward = self._calculator.compute(self._base_env, delta_action)
 
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
-        """
-        Reset the environment.
-        
-        Args:
-            **kwargs: Optional arguments for the reset.
-        Returns:
-            Initial observation and additional info.
-        """
-        return self.env.reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
+        self._prev_action[:] = 0.0
+        return obs, info
+
+    @property
+    def _base_env(self) -> SelfBalancingRobotEnv:
+        e = self.env
+        while hasattr(e, "env"):
+            e = e.env
+        return e  # type: ignore[return-value]
+
+    @property
+    def reward_calculator(self) -> "RewardCalculator":
+        return self._calculator
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Reward calculator (stateless)
+# ──────────────────────────────────────────────────────────────────────────────
 
 class RewardCalculator:
     """
-    Class to compute the reward for the SelfBalancingRobotEnv.
-    HEADING-FIRST VERSION: The robot must first align to the desired heading,
-    then track the desired velocity. Velocity reward is gated by heading accuracy.
+    Computes the per-step shaped reward using ideal sensor data.
+
+    Attributes can be adjusted externally for ablations / hyper-parameter sweeps.
     """
-    def __init__(self, 
-                    heading_weight: float = 1.0, 
-                    velocity_weight: float = 1.6, 
-                    control_variety_weight: float = 0.2):
-        self.heading_weight = heading_weight
-        self.velocity_weight = velocity_weight
-        self.control_variety_weight = control_variety_weight
-    
-    def _heading_error(self, env: SelfBalancingRobotEnv) -> float:
-        # take the quaternion from the environment and convert it to a rotation matrix
-        quat = env.env.data.qpos[3:7]  # Assuming the quaternion is in the order [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
-        rot_matrix = r.as_matrix()
-        # The forward direction in the robot's local frame is typically along the x-axis
-        forward_vector = rot_matrix[:2, 0]  # Get the first column of the rotation
-        # Normalize the forward vector
-        norm = np.linalg.norm(forward_vector)
-        if norm > 1e-6:
-            forward_vector /= norm
-        else:
-            forward_vector = np.array([0.0, 0.0])
-        
-        return env.env.pose_control.error(forward_vector)
-    
-    def _velocity_error(self, env: SelfBalancingRobotEnv) -> float:
-        # 1. Recupera i dati del sensore (VELOCITÀ LOCALE)
-        vel_id = mujoco.mj_name2id(env.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "body_vel") 
-        vel_adr = env.env.model.sensor_adr[vel_id]
-        vel_local = env.env.data.sensordata[vel_adr : vel_adr + 3] # [vx_local, vy_local, vz_local]
-        
-        # 2. Recupera l'orientamento (Quaternione)
-        quat = env.env.data.qpos[3:7]  # [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Scipy vuole [x, y, z, w]
-        
-        # 3. Trasforma la velocità da LOCALE a GLOBALE (World Frame)
-        # Questa operazione applica la rotazione del robot al vettore velocità
-        vel_world = r.apply(vel_local) # Ora abbiamo [vx_world, vy_world, vz_world]
-        
-        # 4. Calcoliamo la direzione in cui il robot sta guardando (Heading)
-        # Prendiamo l'asse X locale (1, 0, 0) e lo ruotiamo nel mondo
-        # Nota: corrisponde alla prima colonna della matrice di rotazione
-        rot_matrix = r.as_matrix()
-        robot_forward_vector = rot_matrix[:, 0] # Vettore direzione nel mondo 3D
-        
-        # Proiettiamo sul piano orizzontale (Z=0) per ignorare il beccheggio (pitch)
-        forward_ground_vector = robot_forward_vector[:2]
-        norm = np.linalg.norm(forward_ground_vector)
-        if norm > 1e-6:
-            forward_ground_vector /= norm
-        else:
-            forward_ground_vector = np.zeros(2)
 
-        # 5. Calcoliamo la velocità effettiva di avanzamento AL SUOLO
-        # Facciamo il prodotto scalare tra la velocità World (xy) e la direzione Heading (xy)
-        current_ground_speed = np.dot(vel_world[:2], forward_ground_vector)
+    def __init__(self) -> None:
+        self.w_balance:  float = W_BALANCE
+        self.w_velocity: float = W_VELOCITY
+        self.w_heading:  float = W_HEADING
+        self.w_smooth:   float = W_SMOOTH
+        self.sigma_pitch: float = SIGMA_PITCH
+        self.sigma_vel:   float = SIGMA_VEL
 
-        # Restituiamo l'errore rispetto al setpoint
-        return env.env.velocity_control.error(current_ground_speed)
-    
-    def _pitch(self, env: SelfBalancingRobotEnv) -> float:
-        quat = env.env.data.qpos[3:7]  # Assuming the quaternion is in the order [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]]) # Rearrange to [x, y, z, w]
-        return r.as_euler('xyz', degrees=False)[1]  # Return the pitch angle in radians
-    
-    def compute_reward(self, env: SelfBalancingRobotEnv) -> float:
+    def compute(self, env: SelfBalancingRobotEnv, delta_action: np.ndarray) -> float:
+        pitch         = self._ideal_pitch(env)
+        vel_error     = self._ideal_velocity_error(env)
+        heading_error = self._ideal_heading_error(env)
+
+        # Balance and velocity: Gaussian kernels (tight precision incentive)
+        r_balance  = self._gaussian_kernel(pitch,     self.sigma_pitch)
+        r_velocity = self._gaussian_kernel(vel_error, self.sigma_vel)
+
+        # Heading: cosine kernel — gives non-zero gradient at ALL error magnitudes.
+        # A Gaussian with σ=0.30 rad gives ~0 gradient beyond 45° error, making
+        # the policy blind to large heading deviations. Cosine has gradient everywhere.
+        r_heading = self._cosine_kernel(heading_error)
+
+        # Action-smoothness penalty
+        r_smooth = -self.w_smooth * float(np.mean((delta_action / env.MAX_CTRL) ** 2))
+
+        # Balance gates everything: no reward for tracking while tilted
+        r_task = r_balance * (self.w_balance + self.w_velocity * r_velocity + self.w_heading * r_heading)
+        return float(r_task + r_smooth)
+
+    # ------------------------------------------------------------------ #
+    #  Ideal-sensor helpers                                                #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _ideal_pitch(env: SelfBalancingRobotEnv) -> float:
+        q = env.data.qpos[3:7]
+        r = R.from_quat([q[1], q[2], q[3], q[0]])
+        return float(r.as_euler("xyz", degrees=False)[1])
+
+    @staticmethod
+    def _ideal_velocity_error(env: SelfBalancingRobotEnv) -> float:
+        left_vel  = float(env.data.sensordata[env.IDX_WHEEL_L_VEL])
+        right_vel = float(env.data.sensordata[env.IDX_WHEEL_R_VEL])
+        ideal_fwd_vel = (left_vel + right_vel) * 0.5 * env.WHEEL_RADIUS
+        return env.velocity_control.error(ideal_fwd_vel)
+
+    @staticmethod
+    def _ideal_heading_error(env: SelfBalancingRobotEnv) -> float:
+        return env.pose_control.error_with_quaternion(env.data.qpos[3:7])
+
+    # ------------------------------------------------------------------ #
+    #  Reward kernels                                                      #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _gaussian_kernel(x: float, sigma: float) -> float:
+        """Gaussian (RBF) kernel: exp(-(x/σ)²). Returns 1 at x=0, →0 for |x|≫σ."""
+        return float(np.exp(-((x / sigma) ** 2)))
+
+    @staticmethod
+    def _cosine_kernel(angle: float) -> float:
         """
-        Compute the reward based on the current state of the environment.
-        Heading has strict priority over velocity: the velocity reward is
-        gated (scaled) by how well the robot is currently tracking the heading.
-        
-        Args:
-            env: The environment instance to compute the reward for.
-        Returns:
-            float: The computed reward.
+        Cosine kernel: (1 + cos(angle)) / 2.
+
+        Returns 1 at angle=0, 0.5 at ±90°, 0 at ±180°.
+        Unlike a Gaussian, it provides non-zero gradient at all error magnitudes,
+        which is critical for heading tracking where initial errors can be ≫45°.
         """
-        heading_error = self._heading_error(env)
-        velocity_error = self._velocity_error(env)
-        ctrl_variation = env.ctrl_variation
-        ctrl = env.ctrl
-        pitch = self._pitch(env)
-
-        # --- 1. Heading reward (always active, high priority) ---
-        heading_reward = self.heading_weight * (1.0 - abs(heading_error))
-
-        # --- 2. Heading gate: [0, 1] factor that suppresses velocity reward when heading is poor ---
-        #    gate ≈ 1 when |heading_error| ≈ 0, gate → 0 when |heading_error| is large
-        heading_gate = self._kernel(heading_error, 0.15)
-
-        # --- 3. Velocity reward (gated by heading accuracy) ---
-        velocity_reward = self.velocity_weight * (1.0 - abs(velocity_error))
-
-        # --- 4. Control smoothness penalty ---
-        smoothness_penalty = -self.control_variety_weight * np.linalg.norm(ctrl_variation)
-
-        # --- 5. Precision bonuses ---
-        # Heading-only bonus: strong incentive for near-perfect heading alignment
-        heading_bonus = self._kernel(heading_error, 0.01)
-
-        # --- 6. Balance bonus: reward for maintaining low pitch angles (stability) ---
-        balance_bonus = self._kernel(pitch, 0.05)
-
-        # --- 7. Speed bonus ---
-        speed_bonus = self._kernel(velocity_error, 0.01)
-
-        # --- 8. Control Difference Bonus ---
-        ctrl_difference = ctrl[0] - ctrl[1]  # Assuming ctrl[0] is left wheel and ctrl[1] is right wheel
-        ctrl_difference_bonus = self._kernel(ctrl_difference, 0.05)
-
-        # Combined bonus: rewards simultaneous precision on heading + velocity + low ctrl
-        combined_bonus = self._kernel(np.linalg.norm(ctrl), 0.5) \
-                       * self._kernel(heading_error, 0.005) \
-                       * self._kernel(velocity_error, 0.005)
-
-        reward = heading_reward \
-               + velocity_reward \
-               + smoothness_penalty \
-               + heading_bonus * speed_bonus
-        
-        return reward # type: ignore
-
-    def _kernel(self, x: float, alpha: float) -> float:
-        return np.exp(-(x**2)/alpha)
+        return float((1.0 + np.cos(angle)) / 2.0)

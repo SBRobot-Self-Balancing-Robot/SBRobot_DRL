@@ -1,5 +1,13 @@
 """
-Environment for a self-balancing robot using MuJoCo.
+Core Gymnasium environment for the self-balancing two-wheeled robot.
+
+Responsibilities:
+  - Load MuJoCo model and manage simulation stepping.
+  - Apply domain randomisation at each episode reset for robustness.
+  - Manage PoseControl and VelocityControl reference generators.
+  - Report episode outcome to VelocityControl for curriculum advancement.
+
+Observations and rewards are computed by the wrappers layered on top.
 """
 import os
 import time
@@ -9,401 +17,339 @@ import typing as T
 import gymnasium as gym
 from mujoco import MjModel, MjData
 from mujoco.viewer import launch_passive
-from src.env.control.pose_control import PoseControl
-from src.env.control.velocity_control import VelocityControl
 from scipy.spatial.transform import Rotation as R
 
+from src.env.control.pose_control import PoseControl
+from src.env.control.velocity_control import VelocityControl
+
+
 class SelfBalancingRobotEnv(gym.Env):
-    def __init__(self, environment_path: str = "./models/scene.xml", max_time: float = 10.0, max_pitch: float = 0.5, frame_skip: int = 10):
-        """
-        Initialize the SelfBalancingRobot environment.
-        
-        Args:
-            environment_path (str): Path to the MuJoCo model XML file.
-            max_time (float): Maximum time for the episode.
-            max_pitch (float): Maximum pitch angle before truncation.
-            frame_skip (int): Number of frames to skip in each step.
-        """
+    """
+    MuJoCo environment for a self-balancing two-wheeled robot.
+
+    Physical constants (derived from the robot XML model):
+        WHEEL_RADIUS  = 0.0625 m   (cylinder geom: size="0.0625 0.01")
+        WHEEL_TRACK   = 0.2982 m   (|y_WheelL − y_WheelR| ≈ 0.298 m)
+        MAX_CTRL      = 8.775 rad/s (actuator ctrlrange)
+        MAX_LIN_VEL   = MAX_CTRL × WHEEL_RADIUS ≈ 0.548 m/s
+
+    Sensor layout in data.sensordata (see SBRobot_Snello.xml):
+        [0:3]   noisy accelerometer   [ax, ay, az]  m/s²
+        [3:6]   noisy gyroscope       [wx, wy, wz]  rad/s
+        [6]     left wheel position   [rad]  (absolute, from jointpos)
+        [7]     right wheel position  [rad]
+        [8]     ideal left wheel vel  [rad/s]
+        [9]     ideal right wheel vel [rad/s]
+        [10:13] ideal accelerometer
+        [13:16] ideal gyroscope
+        [16:19] body velocity at FRAME site [vx, vy, vz] in local frame m/s
+    """
+
+    # ---------- Physical constants ----------
+    WHEEL_RADIUS: float = 0.0625          # m
+    WHEEL_TRACK: float  = 0.2982          # m
+    MAX_CTRL: float     = 8.775           # rad/s
+    MAX_LIN_VEL: float  = MAX_CTRL * WHEEL_RADIUS  # ≈ 0.548 m/s
+
+    # ---------- Sensor sensordata indices ----------
+    IDX_ACCEL        = slice(0, 3)
+    IDX_GYRO         = slice(3, 6)
+    IDX_WHEEL_L_POS  = 6
+    IDX_WHEEL_R_POS  = 7
+    IDX_WHEEL_L_VEL  = 8    # ideal (no noise)
+    IDX_WHEEL_R_VEL  = 9    # ideal (no noise)
+    IDX_IDEAL_ACCEL  = slice(10, 13)
+    IDX_IDEAL_GYRO   = slice(13, 16)
+    IDX_BODY_VEL     = slice(16, 19)  # velocimeter at FRAME, local frame
+
+    metadata = {"render_modes": ["human", "rgb_array"]}
+
+    def __init__(
+        self,
+        environment_path: str = "./models/scene.xml",
+        max_time: float = 20.0,
+        max_pitch: float = 0.5,
+        frame_skip: int = 10,
+        initial_curriculum_phase: int = 0,
+        render_mode: str = None,
+    ) -> None:
         super().__init__()
+        self.render_mode = render_mode
         self.viewer = None
+        self._offscreen_renderer = None
+
         full_path = os.path.abspath(environment_path)
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Model file not found: {full_path}")
-        
-        self.model = MjModel.from_xml_path(full_path)
-        self.data = MjData(self.model)
-        self.max_time = max_time        # Maximum time for the episode
-        self.frame_skip = frame_skip    # Number of frames to skip in each step  
-        self.time_step = self.model.opt.timestep * self.frame_skip # Effective time step of the environment
-        # Observation space: pitch, wheel velocities
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
-        
-        # Action space
-        ctrl_ranges = self.model.actuator_ctrlrange
-        
-        self.low  = ctrl_ranges[:, 0]
-        self.high = ctrl_ranges[:, 1]
 
-        self.action_space = gym.spaces.Box(
-            low=self.low,
-            high=self.high,
-            dtype=np.float32
+        self.model: MjModel = MjModel.from_xml_path(full_path)
+        self.data: MjData  = MjData(self.model)
+
+        self.max_time: float   = max_time
+        self.max_pitch: float  = max_pitch
+        self.frame_skip: int   = frame_skip
+        self.time_step: float  = self.model.opt.timestep * frame_skip
+
+        # Observation space: 10 normalised features (see ObservationWrapper)
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
         )
-        
-        # Initialize the environment attributes
-        self.max_pitch = max_pitch # Maximum pitch angle before truncation
-        self.setpoint = [0.0, 0.0] # [velocity_setpoint, angular_velocity_setpoint (steering)]        
 
-        # Save initial masses for randomization
-        self.initial_masses = self.model.body_mass.copy()
+        # Action space: left and right wheel velocity commands [rad/s]
+        ctrl_ranges = self.model.actuator_ctrlrange
+        self.action_space = gym.spaces.Box(
+            low=ctrl_ranges[:, 0].astype(np.float32),
+            high=ctrl_ranges[:, 1].astype(np.float32),
+            dtype=np.float32,
+        )
 
-        # Save original body positions for randomization
-        self.original_body_ipos = self.model.body_ipos.copy()
+        # Madgwick quaternion state – shared with ObservationWrapper
+        self.Q: np.ndarray = np.array([1.0, 0.0, 0.0, 0.0])  # [w, x, y, z]
 
-        # Save original IMU position for randomization
-        self.imu_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, " ")
-        self.original_imu_pos = self.model.body_pos[self.imu_id].copy()
-        self.original_imu_quat = self.model.body_quat[self.imu_id].copy()
+        # Reference generators
+        self.pose_control     = PoseControl()
+        self.velocity_control = VelocityControl(initial_phase=initial_curriculum_phase)
+        self.training: bool   = True
 
-        # Initialize pose control
-        self.pose_control = PoseControl()
-        self.velocity_control = VelocityControl()
-        self.pose_hold_timer = 0
-        self.training = True
+        # Baseline values for domain randomisation (saved once at construction)
+        self._initial_masses      = self.model.body_mass.copy()
+        self._original_body_ipos  = self.model.body_ipos.copy()
 
-    def step(self, action: T.Tuple[float, float]) -> T.Tuple[np.ndarray, float, bool, bool, dict]: 
-        """
-        Perform a step in the environment.
-        
-        Args:
-            action (np.ndarray or list): The action to be taken, which is a torque applied
-            to the wheels of the robot.
+        imu_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "IMU")
+        if imu_id < 0:
+            raise RuntimeError("IMU body not found in model. Check XML body name.")
+        self._imu_id              = imu_id
+        self._original_imu_pos    = self.model.body_pos[imu_id].copy()
+        self._original_imu_quat   = self.model.body_quat[imu_id].copy()
 
-        Returns:
-            T.Tuple[np.ndarray, float, bool, dict]: A tuple containing:
-                - obs (np.ndarray): The observation of the environment (pitch angle, pitch velocity, x position, and x velocity).
-                - reward (float): The reward received after taking the action   
-                - terminated (bool): Whether the episode has terminated.
-                - truncated (bool): Whether the episode has been truncated.
-                - info (dict): Additional information about the environment.
-        """
-        action = np.clip(action, self.low, self.high)
+    # ------------------------------------------------------------------ #
+    #  Core Gymnasium API                                                  #
+    # ------------------------------------------------------------------ #
+
+    def step(
+        self, action: np.ndarray
+    ) -> T.Tuple[np.ndarray, float, bool, bool, dict]:
+        action = np.clip(action, self.action_space.low, self.action_space.high)
         self.data.ctrl[:] = action
-        
-        heading_error = self.pose_control.error_with_quaternion(quat=self.data.qpos[3:7])
-        current_avg_speed = (self.data.qvel[6] + self.data.qvel[7]) / 2
+
         if self.training:
-            self.pose_control.update(heading_error=heading_error)
+            self.velocity_control.update(dt=self.time_step)
+            self.pose_control.update(dt=self.time_step)
 
-            # Update velocity control: tracks hold time, checks convergence,
-            # applies incremental changes, and attenuates speed when heading error is large
-            self.velocity_control.update(
-                dt=self.time_step, 
-                current_speed=current_avg_speed,
-                heading_error=heading_error
-            )
-            
         for _ in range(self.frame_skip):
-            mujoco.mj_step(self.model, self.data)  # Step the simulation
-        
-        terminated = self._is_terminated()
-        truncated = self._is_truncated()
-        
-        return [], 0.0, terminated, truncated, {} # type: ignore
+            mujoco.mj_step(self.model, self.data)
 
-    def reset(self, seed: T.Optional[int] = None, options: T.Optional[dict] = None) -> T.Tuple[np.ndarray, dict]:
-        """
-        Reset the environment to an initial state.
-        
-        Args:
-            seed (int, optional): Random seed for reproducibility.
-            options (dict, optional): Additional options for resetting the environment.
-            
-        Returns:
-            T.Dict[str, T.Any]: A dictionary containing the initial observation of the environment (pitch angle, pitch velocity, x position, and x velocity).
-        """
-        # Seed the random number generator
+        terminated = self._is_terminated()
+        truncated  = self._is_truncated()
+
+        # Observations and reward are filled in by the wrappers
+        return np.zeros(10, dtype=np.float32), 0.0, terminated, truncated, {}
+
+    def reset(
+        self,
+        seed: T.Optional[int] = None,
+        options: T.Optional[dict] = None,
+    ) -> T.Tuple[np.ndarray, dict]:
         if seed is not None:
             np.random.seed(seed)
         super().reset(seed=seed)
 
-        # Report episode result for curriculum learning (before data reset)
-        # data.time > 0 ensures we skip the very first reset (no episode has run yet)
+        # Report episode outcome to curriculum (skip the very first call)
         if self.training and self.data.time > 0:
-            success = not self._is_truncated()  # success = reached max_time without falling
+            # True success = robot survived the full episode without falling
+            success = self._is_truncated()
             self.velocity_control.report_episode_result(success)
 
-        mujoco.mj_resetData(self.model, self.data)  # Reset the simulation data
+        mujoco.mj_resetData(self.model, self.data)
         self._initialize_random_state()
-        return [], {}
-    
-    def _get_chassis_orientation(self) -> T.Tuple[float, float, float]:
-        """
-        Get the chassis orientation in Euler angles (roll, pitch, yaw).
-        
-        Returns:
-            T.Tuple[float, float, float]: The roll, pitch, and yaw angles of the chassis.
-        """
-        quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])  # scipy wants [x, y, z, w]
-        return r.as_euler('xyz', degrees=False)  # in radians
 
-    # Environment termination and truncation conditions
+        return np.zeros(10, dtype=np.float32), {}
+
+    # ------------------------------------------------------------------ #
+    #  Termination / truncation                                            #
+    # ------------------------------------------------------------------ #
+
     def _is_terminated(self) -> bool:
-        """
-        Terminate the episode if the robot's pitch exceeds the maximum allowed value.
-        
-        Returns:
-            bool: True if the episode is terminated, False otherwise.
-        """
-        _, pitch, _ = self._get_chassis_orientation()
-        
-        return bool(
-            abs(pitch) > self.max_pitch
-            )
-    
+        """Robot fell over – pitch angle exceeded the safety limit."""
+        return bool(abs(self._get_pitch()) > self.max_pitch)
+
     def _is_truncated(self) -> bool:
-        """
-        Truncate the episode if the time exceeds the maximum allowed value.
-
-        Returns:
-            bool: True if the episode is truncated, False otherwise.
-        """
+        """Episode time limit reached (robot survived)."""
         return self.data.time >= self.max_time
-    
-    # Initialize and randomization methods
-    def _space_positioning(self):
-        """
-        Randomly position the robot within defined ranges for x, y, pitch, and yaw.
-        """
-        # Random position
-        self.data.qpos[:3] = [np.random.uniform(-0.5, 0.5), np.random.uniform(-0.5, 0.5), 0.255]  # Initial position (x, y, z)
 
-        # Reandom orientation
-        euler = [
-            0.0, # Roll
-            np.random.uniform(-0.1, 0.1), # Pitch
-            np.random.uniform(-np.pi, np.pi) # Yaw
-        ]
-        # Euler → Quaternion [x, y, z, w]
-        quat_xyzw = R.from_euler('xyz', euler).as_quat()
+    def _get_pitch(self) -> float:
+        """Pitch angle [rad] from the ideal quaternion in data.qpos."""
+        q = self.data.qpos[3:7]
+        r = R.from_quat([q[1], q[2], q[3], q[0]])
+        return float(r.as_euler("xyz", degrees=False)[1])
 
-        self.data.qpos[3:7] = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
+    # ------------------------------------------------------------------ #
+    #  Episode initialisation & domain randomisation                       #
+    # ------------------------------------------------------------------ #
 
-        self.Q = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
-        
-        r = R.from_euler('xyz', euler).as_matrix()
-        x_head = r[:2, 0]  # Negated: robot's front points along -X
-        norm = np.linalg.norm(x_head)
-        if norm > 1e-6:
-            unit_vector = x_head / norm
-        else:
-            unit_vector= np.zeros(2)
-        self.pose_control.heading_angle = unit_vector
-
-    def _reset_params(self):
-        """
-        Reset environment parameters to default values.
-        """
-        # Reset ctrl inputs
-        self.data.ctrl[:] = 0.0
-
-        # Set speeds
-        self.data.qvel[2] = 0.0
-        self.data.qvel[:2] = np.random.uniform(-0.1, 0.1, size=2) # Piccola spinta iniziale
-        self.velocity_control.generate_random()
-
-        # Reset past values
-        self.past_pitch = 0.0
-        self.past_wz = 0.0
-        self.past_ctrl = np.array([0.0, 0.0])
-        self.past_wheels_velocity = np.array([0.0, 0.0])
-    
-    def _randomize_masses(self):
-        """
-        Randomize the masses of the robot's components within ±10% of their original values.
-        """
-        for i in range(self.model.nbody):
-            random_factor = np.random.uniform(0.9, 1.1)
-            self.model.body_mass[i] = self.initial_masses[i] * random_factor
-
-    def _randomize_com(self):
-        """
-        Randomize the center of mass of each body by adding a small positional offset (±2 cm).
-        """
-        for i in range(self.model.nbody):
-            offset = np.random.uniform(-0.002, 0.002, size=3)  # ±2 mm
-            self.model.body_ipos[i] = self.original_body_ipos[i] + offset
-
-    def _randomize_imu_pose(self):
-        """
-        Randomize the IMU pose by adding small positional and rotational offsets.
-        """
-        # Random position offset ±5 mm
-        pos_offset = np.random.uniform(-0.005, 0.005, size=3)
-        self.model.body_pos[self.imu_id] = self.original_imu_pos + pos_offset
-
-        # Random rotation offset ±0.01 rad (about 0.57°) per axis
-        euler_offset = np.random.uniform(-0.01, 0.01, size=3)
-        quat_offset = R.from_euler("xyz", euler_offset).as_quat() 
-        # Convert to MuJoCo format [w, x, y, z]
-        quat_offset_mj = np.array([quat_offset[3], quat_offset[0], quat_offset[1], quat_offset[2]])
-
-        # Multiply the original IMU quaternion by the offset
-        new_quat = np.zeros(4, dtype=np.float64)
-        mujoco.mju_mulQuat(new_quat, self.original_imu_quat, quat_offset_mj)
-        self.model.body_quat[self.imu_id] = new_quat
-
-    def _randomize_actuator_gains(self):
-        """
-        Randomize the actuator gains within ±20% of their original values.
-        """
-        left_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
-        right_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_motor")
-
-        # varia kv del ±20%
-        self.model.actuator_gainprm[left_id][0] = np.random.uniform(16, 24)
-        self.model.actuator_gainprm[right_id][0] = np.random.uniform(16, 24)
-
-    def _randomize_wheel_friction(self):
-        """
-        Randomize the friction parameters of the wheels within ±10% of given values.
-        """
-        # random ±10% per ogni componente dell'attrito
-        sliding   = np.random.uniform(0.8, 1.0)   # 0.9 ±10%
-        torsional = np.random.uniform(0.045, 0.055) # 0.05 ±10%
-        rolling   = np.random.uniform(0.0018, 0.0022) # 0.002 ±10%
-
-        for wheel in ["WheelL_collision", "WheelR_collision"]:
-            geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, wheel)
-            self.model.geom_friction[geom_id] = [sliding, torsional, rolling]
-
-    # Initialize random state
-    def _initialize_random_state(self):
-        # Position the robot randomly within a small range
+    def _initialize_random_state(self) -> None:
         self._space_positioning()
-
-        # Reset other parameters
-        self._reset_params()
-
-        # Randomize masses
+        self._reset_ctrl()
         self._randomize_masses()
-
-        # Randomize center of mass
         self._randomize_com()
-
-        # Randomize IMU pose
         self._randomize_imu_pose()
-
-        # Randomize actuator gains
         self._randomize_actuator_gains()
-
-        # Randomize wheels friction
         self._randomize_wheel_friction()
-
-        # Reset velocity control (keeps curriculum phase across episodes)
+        # Reset reference generators for the new episode
         self.velocity_control.reset()
-        self.velocity_control.generate_random()
+        self.pose_control.generate_random()  # fully random initial heading each episode
 
-        # Reset pose control
-        self.pose_control.reset()
-        
-    def render(self, mode='human'):
-        """
-        Render the environment.
-        """
+    def _space_positioning(self) -> None:
+        """Randomise starting position, pitch and yaw."""
+        self.data.qpos[:3] = [
+            np.random.uniform(-0.5, 0.5),
+            np.random.uniform(-0.5, 0.5),
+            0.255,
+        ]
+        euler = [
+            0.0,
+            np.random.uniform(-0.1, 0.1),   # small pitch perturbation
+            np.random.uniform(-np.pi, np.pi),  # random yaw
+        ]
+        q_xyzw = R.from_euler("xyz", euler).as_quat()
+        q_mj   = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+        self.data.qpos[3:7] = q_mj
+
+        # Initialise Madgwick filter from the actual starting orientation
+        self.Q = q_mj.copy()
+
+    def _reset_ctrl(self) -> None:
+        self.data.ctrl[:] = 0.0
+        # Small random initial body velocity to avoid overfitting to the exact upright start
+        self.data.qvel[:2] = np.random.uniform(-0.05, 0.05, size=2)
+        self.data.qvel[2:] = 0.0
+
+    def _randomize_masses(self) -> None:
+        for i in range(self.model.nbody):
+            self.model.body_mass[i] = self._initial_masses[i] * np.random.uniform(0.9, 1.1)
+
+    def _randomize_com(self) -> None:
+        for i in range(self.model.nbody):
+            self.model.body_ipos[i] = (
+                self._original_body_ipos[i] + np.random.uniform(-0.002, 0.002, size=3)
+            )
+
+    def _randomize_imu_pose(self) -> None:
+        pos_offset = np.random.uniform(-0.005, 0.005, size=3)
+        self.model.body_pos[self._imu_id] = self._original_imu_pos + pos_offset
+
+        euler_off = np.random.uniform(-0.01, 0.01, size=3)
+        q_off     = R.from_euler("xyz", euler_off).as_quat()
+        q_off_mj  = np.array([q_off[3], q_off[0], q_off[1], q_off[2]])
+        new_quat  = np.zeros(4, dtype=np.float64)
+        mujoco.mju_mulQuat(new_quat, self._original_imu_quat, q_off_mj)
+        self.model.body_quat[self._imu_id] = new_quat
+
+    def _randomize_actuator_gains(self) -> None:
+        for name in ("left_motor", "right_motor"):
+            aid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            self.model.actuator_gainprm[aid][0] = np.random.uniform(16.0, 24.0)
+
+    def _randomize_wheel_friction(self) -> None:
+        friction = [
+            np.random.uniform(0.81, 0.99),    # sliding
+            np.random.uniform(0.045, 0.055),  # torsional
+            np.random.uniform(0.0018, 0.0022),  # rolling
+        ]
+        for name in ("WheelL_collision", "WheelR_collision"):
+            gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            self.model.geom_friction[gid] = friction
+
+    # ------------------------------------------------------------------ #
+    #  Rendering                                                           #
+    # ------------------------------------------------------------------ #
+
+    def render(self):
+        if self.render_mode == "rgb_array":
+            return self._render_offscreen()
+        else:
+            self._render_human()
+
+    def _render_offscreen(self) -> np.ndarray:
+        if self._offscreen_renderer is None:
+            self._offscreen_renderer = mujoco.Renderer(self.model, height=480, width=640)
+
+        chassis_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Chassis")
+        cam = mujoco.MjvCamera()
+        cam.type        = mujoco.mjtCamera.mjCAMERA_TRACKING
+        cam.trackbodyid = chassis_id
+        cam.distance    = 2.0
+        cam.azimuth     = 135.0
+        cam.elevation   = -20.0
+
+        self._offscreen_renderer.update_scene(self.data, camera=cam)
+        return self._offscreen_renderer.render()
+
+    def _render_human(self) -> None:
         if self.viewer is None:
             self.viewer = launch_passive(self.model, self.data)
-        
-        if self.viewer.is_running():
-            self.viewer.user_scn.ngeom = 0 
 
-            # --- Desired heading (green) from PoseControl ---
-            desired_heading = self.pose_control.heading
-            desired_vector = np.array([-desired_heading[0], -desired_heading[1], 0.0])
+        if not self.viewer.is_running():
+            return
 
-            # --- Current heading (red) from robot pose, attached to chassis ---
-            chassis_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Chassis")
-            chassis_pos = self.data.xpos[chassis_id].copy()
-            
-            self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-            self.viewer.cam.trackbodyid = chassis_id
-            # Put the origin above the robot, but attached to it (take the height of the chassis into account)
-            origin = chassis_pos + np.array([0.0, 0.0, 0.2])
+        self.viewer.user_scn.ngeom = 0
 
-            quat = self.data.qpos[3:7]  # quaternion [w, x, y, z]
-            rot = R.from_quat([quat[1], quat[2], quat[3], quat[0]])  # scipy wants [x, y, z, w]
-            _, _, yaw = rot.as_euler('xyz', degrees=False)
-            current_heading = np.array([np.cos(yaw), np.sin(yaw), 0.0])
-            self.render_vector(
-                origin=origin, 
-                vector=desired_vector, 
-                color=[0.0, 1.0, 0.0, 1.0], 
-                radius=0.02, 
-                scale=0.5 
-            )
-            self.render_vector(
-                # put the origin above the robot 
-                origin=origin, 
-                vector=current_heading, 
-                color=[1.0, 0.0, 0.0, 0.5], 
-                radius=0.02, 
-                scale=0.5 
-            )
-            
-            # # Also show the normal (current heading) rotated by 180 to visualize the back direction
-            # back_heading = -current_heading
-            # self.render_vector(
-            #     origin=origin, 
-            #     vector=back_heading, 
-            #     color=[1.0, 0.0, 0.0, 0.5], 
-            #     radius=0.02, 
-            #     scale=0.5 
-            # )
+        chassis_id  = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "Chassis")
+        chassis_pos = self.data.xpos[chassis_id].copy()
+        origin      = chassis_pos + np.array([0.0, 0.0, 0.2])
 
-            # Render the velocity as a vector attached to the chassis (use self.velocity_control.speed in the forward direction)
-            velocity_vector = current_heading * self.velocity_control.speed * 0.5  # scale down for visualization
-            self.render_vector(
-                origin=origin, 
-                vector=velocity_vector, 
-                color=[0.0, 0.0, 1.0, 0.5], 
-                radius=0.02, 
-                scale=1.0
-            )
+        self.viewer.cam.type        = mujoco.mjtCamera.mjCAMERA_TRACKING
+        self.viewer.cam.trackbodyid = chassis_id
 
-            self.viewer.sync()
-            
-            time.sleep(self.time_step)
+        q   = self.data.qpos[3:7]
+        rot = R.from_quat([q[1], q[2], q[3], q[0]])
+        _, _, yaw = rot.as_euler("xyz", degrees=False)
+        current_fwd = np.array([np.cos(yaw), np.sin(yaw), 0.0])
 
-    def render_vector(self, origin: np.ndarray, vector: np.ndarray, color: T.List[float], scale: float = 1.0, radius: float = 0.02):
-        """
-        Helper to render an arrow geometry in the existing passive viewer scene.
-        """
+        desired   = self.pose_control.heading
+        desired3d = np.array([desired[0], desired[1], 0.0])
+
+        self._render_vector(origin, desired3d,   [0.0, 1.0, 0.0, 1.0], scale=0.5)
+        self._render_vector(origin, current_fwd, [1.0, 0.0, 0.0, 0.8], scale=0.5)
+
+        vel_ratio = self.velocity_control.speed / self.MAX_LIN_VEL
+        vel_vec   = current_fwd * vel_ratio * 0.4
+        self._render_vector(origin, vel_vec, [0.0, 0.0, 1.0, 0.8], scale=1.0)
+
+        self.viewer.sync()
+        time.sleep(self.time_step)
+
+    def _render_vector(
+        self,
+        origin: np.ndarray,
+        vector: np.ndarray,
+        color: T.List[float],
+        scale: float = 1.0,
+        radius: float = 0.02,
+    ) -> None:
         if self.viewer is None:
             return
-
         scn = self.viewer.user_scn
-        
         if scn.ngeom >= scn.maxgeom:
-            print("Warning: Max geoms reached in viewer scene.")
             return
-
-        endpoint = origin + (vector * scale)
-        
+        endpoint = origin + vector * scale
         mujoco.mjv_initGeom(
             scn.geoms[scn.ngeom],
-            mujoco.mjtGeom.mjGEOM_ARROW, 
-            np.zeros(3), 
-            np.zeros(3), 
-            np.zeros(9), 
-            np.array(color, dtype=np.float32)
+            mujoco.mjtGeom.mjGEOM_ARROW,
+            np.zeros(3), np.zeros(3), np.zeros(9),
+            np.array(color, dtype=np.float32),
         )
         mujoco.mjv_connector(
             scn.geoms[scn.ngeom],
             mujoco.mjtGeom.mjGEOM_ARROW,
-            radius,
-            origin,
-            endpoint
+            radius, origin, endpoint,
         )
-        
         scn.ngeom += 1
+
+    def close(self) -> None:
+        if self._offscreen_renderer is not None:
+            self._offscreen_renderer.close()
+            self._offscreen_renderer = None
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None

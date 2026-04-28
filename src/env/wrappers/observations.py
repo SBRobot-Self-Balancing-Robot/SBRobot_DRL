@@ -1,306 +1,201 @@
-import mujoco
+"""
+Observation wrapper for the SelfBalancingRobotEnv.
+
+Converts raw MuJoCo sensor data into a clean, normalised 10-element vector
+suitable for policy gradient / actor-critic algorithms.
+
+Observation vector layout:
+    [0]  pitch_norm       – Madgwick pitch / MAX_PITCH      ∈ [-1, 1] (≈)
+    [1]  pitch_rate_norm  – noisy gyro Y  / GYRO_FSR_RAD   ∈ [-1, 1] (≈)
+    [2]  yaw_rate_norm    – noisy gyro Z  / GYRO_FSR_RAD   ∈ [-1, 1] (≈)
+    [3]  fwd_vel_norm     – avg wheel vel (m/s) / MAX_LIN_VEL ∈ [-1, 1] (≈)
+    [4]  diff_vel_norm    – diff wheel vel (m/s) / MAX_LIN_VEL ∈ [-1, 1] (≈)
+    [5]  target_vel_norm  – velocity setpoint / MAX_LIN_VEL  ∈ [-1, 1]
+    [6]  heading_err_norm – signed heading error (rad) / π   ∈ [-1, 1]
+    [7]  vel_err_norm     – velocity error (m/s) / MAX_LIN_VEL ∈ [-1, 1] (≈)
+    [8]  prev_act_L_norm  – previous left  motor cmd / MAX_CTRL ∈ [-1, 1]
+    [9]  prev_act_R_norm  – previous right motor cmd / MAX_CTRL ∈ [-1, 1]
+
+Sensor usage:
+    Observations use NOISY sensors (accelerometer, gyroscope, quantised encoders)
+    to simulate real hardware, making policies transferable to physical robots.
+    Heading error uses the ideal quaternion (data.qpos[3:7]) as a proxy for a
+    compass/visual-odometry heading estimate.
+
+Madgwick filter:
+    The filter is re-seeded from the ideal quaternion at every episode reset
+    so the pitch estimate starts from a consistent state.
+"""
 import numpy as np
 import typing as T
 import gymnasium as gym
-from src.utils.math import signed_sin
 from ahrs.filters import Madgwick
-from src.env.robot import SelfBalancingRobotEnv
 from scipy.spatial.transform import Rotation as R
 
-FS_ACCEL = 16384.0            # LSB/g
-FSR_ACCEL = 2                 # Full scale range in g
-FS_GYRO = 131.0               # LSB/(°/s)
-FSR_GYRO = 250.0              # Full scale range in °/s
+from src.env.robot import SelfBalancingRobotEnv
 
-g = 9.81                      # Gravitational acceleration in m/s^2
 
-DEG2RAD = (np.pi)/180         # Degrees to radians conversion factor
-RAD2DEG = 180/(np.pi)         # Radians to degrees conversion factor
+# ---------- IMU constants (match real MPU-6050 / ICM-42688 defaults) ----------
+GYRO_FSR_DEG: float = 250.0                    # °/s full-scale range
+GYRO_FSR_RAD: float = GYRO_FSR_DEG * np.pi / 180.0  # ≈ 4.363 rad/s
+
+# Encoder quantisation (12-bit encoder → 4096 counts/revolution of the wheel)
+ENCODER_RESOLUTION: float = (2.0 * np.pi) / 8192.0  # rad per tick
+
 
 class ObservationWrapper(gym.Wrapper):
-    """
-    Wrapper for the SelfBalancingRobotEnv to modify the observation structure.
-    """
-    def __init__(self, env: SelfBalancingRobotEnv):
+    """Processes raw sensor data into a normalised 10-element observation."""
+
+    def __init__(self, env: SelfBalancingRobotEnv) -> None:
         super().__init__(env)
 
-        # Sensor parameters
-        self.encoder_resolution = (2 * np.pi)/8192 # Minimum angular change detectable by the wheel encoders [radians]
-
-        # Madgwick filter for orientation estimation
-        self.madgwick = Madgwick(frequency=1.0/self.env.time_step, beta=0.033)
-
-        # Initialize observation values
-        self.direction_vector = np.array([0.0, 0.0]) # Normal vector pointing upwards in the robot's frame
-        self.roll, self.pitch, self.yaw = 0.0, 0.0, 0.0 # Orientation angles of the robot [roll, pitch, yaw]
-        self.linear_acceleration = np.zeros(3) # Linear acceleration of the robot [gyro_x, gyro_y, gyro_z]
-        self.angular_velocity = np.zeros(3) # Angular velocity of the robot [angular_velocity_x, angular_velocity_y, angular_velocity_z]
-        self.wheels_position = np.zeros(2) # Angular position of the wheels [wheel_left_position, wheel_right_position]
-        self.wheels_velocity = np.zeros(2) # Quantized angular velocity of the wheels [wheel_left_velocity, wheel_right_velocity]
-        self.ctrl = np.zeros(2) # Control commands sent to the motors [left_motor_command, right_motor_command]
-        
-        # Initialize past values for observation
-        self.past_ctrl = np.array([0.0, 0.0])
-
-        # Control variation
-        self.ctrl_variation = np.array([0.0, 0.0])
-
-    def step(self, action):
-        """
-        Executes one step in the environment with the given action.
-        
-        Args:
-            action: The action to take in the environment.
-        Returns:
-            obs: The modified observation after taking the action.
-            reward: The reward from the environment.
-            terminated: Whether the episode has ended.
-            truncated: Whether the episode was truncated.
-            info: Additional information from the environment.
-        """
-        obs, reward, terminated, truncated, info = self.env.step(action)
-
-        obs = self._get_obs()
-
-        return obs, reward, terminated, truncated, info
-    
-    def reset(self, **kwargs):
-        """
-        Reset the environment.
-        
-        Args:
-            **kwargs: Optional arguments for the reset.
-        Returns:
-            Initial modified observation and additional info.
-        """
-        
-        obs, info = self.env.reset(**kwargs)
-
-        obs = self._get_obs()
-
-        self._reset_params()
-
-        return obs, info
-    
-    def _reset_params(self):
-        """
-        Reset environment parameters to default values.
-        """
-        # Reset past control commands
-        self.past_ctrl = np.array([0.0, 0.0])
-
-        # Reset control variation
-        self.ctrl_variation = np.array([0.0, 0.0])
-        
-
-    # Sensor reading and observation construction
-    def _get_wheels_data(self) -> T.Tuple[float, float, float, float]:
-        """
-        Get the angular velocities of the robot's wheels.
-        
-        Returns:
-            T.Tuple[float, float, float, float]: The positions and angular velocities of the left and right wheels.
-
-        """
-        # Index of the wheel position sensors
-        left_pos_id = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "left_wheel_pos")
-        right_pos_id = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "right_wheel_pos")
-
-        # Address of the wheel position sensor data
-        left_pos_adr = self.env.model.sensor_adr[left_pos_id]
-        right_pos_adr = self.env.model.sensor_adr[right_pos_id]
-
-        # Get the wheel positions
-        left_pos = self.env.data.sensordata[left_pos_adr]
-        right_pos = self.env.data.sensordata[right_pos_adr]
-
-        # Quantization according to encoder resolution
-        left_pos = np.floor(left_pos / self.encoder_resolution) * self.encoder_resolution
-        right_pos = np.floor(right_pos / self.encoder_resolution) * self.encoder_resolution
-        
-        # Compute wheel angular velocities
-        left_speed = (left_pos - self.wheels_position[0]) / self.env.time_step
-        right_speed = (right_pos - self.wheels_position[1]) / self.env.time_step
-        return left_pos, right_pos, left_speed, right_speed
-
-    def _get_body_linear_acceleration(self) -> np.ndarray:
-        """
-        Get the linear accelerations of the robot's body.
-        
-        Returns:
-            np.ndarray: The linear accelerations of the robot's body in the order [acceleration_x, acceleration_y, acceleration_z].
-        """
-        # Index of the gyroscope sensor
-        accel_id = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "accelerometer") # with noise
-
-        # Address of the gyroscope sensor data
-        accel_adr = self.env.model.sensor_adr[accel_id]
-
-        return self.env.data.sensordata[accel_adr : accel_adr + 3]
-
-    def _get_robot_angular_velocity(self) -> np.ndarray:
-        """
-        Get the angular velocity of the robot.
-        
-        Returns:
-            np.ndarray: The angular velocity of the robot in the order [angular_velocity_x, angular_velocity_y, angular_velocity_z].
-        """
-        # Index of the gyroscope sensor
-        gyro_id = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_SENSOR, "gyroscope") # with noise
-
-        # Address of the gyroscope sensor data
-        gyro_adr = self.env.model.sensor_adr[gyro_id]
-
-        return self.env.data.sensordata[gyro_adr : gyro_adr + 3]
-
-    def _get_body_orientation_angles(self, angular_velocity, linear_acceleration) -> T.Tuple[np.ndarray, float, float, float]:
-        """
-        Get the orientation angles of the robot's body in Euler angles (roll, pitch, yaw).
-        
-        Returns:
-            T.Tuple[np.ndarray, float, float, float]: The direction vector and the roll, pitch, and yaw angles of the robot's body.
-        """
-        # 1. Update the Quaternion State
-        # The filter calculates the NEW quaternion based on the OLD quaternion + Sensor Data
-        self.env.Q = self.madgwick.updateIMU(
-            self.env.Q, 
-            gyr=angular_velocity,     # Gyro [x, y, z] in rad/s
-            acc=linear_acceleration   # Accel [x, y, z] in m/s^2 or g
+        # Override the base env observation space with the exact shape we return
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32
         )
 
-        # 2. Convert Quaternion to Euler
-        # AHRS uses [w, x, y, z], Scipy uses [x, y, z, w] -> We must reorder
-        r = R.from_quat([self.env.Q[1], self.env.Q[2], self.env.Q[3], self.env.Q[0]])
-        
-        # Get the rotation matrix
-        rot_matrix = r.as_matrix()
-        xy_vector = rot_matrix[:2,0]
-        norm = np.linalg.norm(xy_vector)
-        if norm > 1e-6:
-            unit_vector = xy_vector / norm
-        else:
-            unit_vector= np.zeros(2)
+        # Madgwick orientation filter (IMU fusion for pitch/roll/yaw estimate)
+        self._madgwick = Madgwick(
+            frequency=1.0 / self.env.time_step,  # control frequency [Hz]
+            beta=0.033,                           # filter gain (gyro-trust parameter)
+        )
 
-        # Get angles (standard aerospace sequence is usually 'xyz' -> roll, pitch, yaw)
-        roll, pitch, yaw = r.as_euler('xyz', degrees=False)
-        
-        # 3. Return in the SPECIFIC order your previous function defined: (Pitch, Roll, Yaw)
-        return unit_vector, pitch, roll, yaw
+        # Internal state
+        self._prev_wheel_pos: np.ndarray = np.zeros(2)  # for encoder differentiation
+        self._prev_action: np.ndarray    = np.zeros(2)  # for smoothness observation
 
-    # Observation construction
+    # ------------------------------------------------------------------ #
+    #  Gymnasium API                                                       #
+    # ------------------------------------------------------------------ #
 
-    def _normalize_value(self, value, range) -> float:
-        """Normalize a value to the range [-1, 1]."""
-        return (value / range) if range != 0 else 0
-    
-    def _value_variation(self, current_value, past_value) -> float:
-        """Compute the variation of a value over time."""
-        return (current_value - past_value)
+    def step(self, action: np.ndarray):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        obs = self._get_obs(action)
+        return obs, reward, terminated, truncated, info
 
-    def _get_obs(self) -> np.ndarray:
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        # Reset wrapper state BEFORE building the first observation
+        self._reset_wrapper_state()
+        obs = self._get_obs(np.zeros(2))
+        return obs, info
+
+    # ------------------------------------------------------------------ #
+    #  Internal reset                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _reset_wrapper_state(self) -> None:
+        """Reset all per-episode wrapper state."""
+        # Re-seed Madgwick from the actual starting quaternion so pitch starts clean
+        self.env.Q = self.env.data.qpos[3:7].copy()  # [w, x, y, z]
+
+        # Reset encoder baseline so the first velocity estimate is zero
+        self._prev_wheel_pos[:] = self.env.data.sensordata[
+            [self.env.IDX_WHEEL_L_POS, self.env.IDX_WHEEL_R_POS]
+        ]
+
+        # Reset previous action
+        self._prev_action[:] = 0.0
+
+    # ------------------------------------------------------------------ #
+    #  Sensor reading helpers                                              #
+    # ------------------------------------------------------------------ #
+
+    def _read_noisy_gyro(self) -> np.ndarray:
+        """Return angular velocity [wx, wy, wz] rad/s from the noisy gyroscope."""
+        return self.env.data.sensordata[self.env.IDX_GYRO].copy()
+
+    def _read_noisy_accel(self) -> np.ndarray:
+        """Return specific force [ax, ay, az] m/s² from the noisy accelerometer."""
+        return self.env.data.sensordata[self.env.IDX_ACCEL].copy()
+
+    def _read_quantised_wheel_vel(self) -> np.ndarray:
         """
-        Get the current observation of the environment.
-       
-        Returns:
-            np.ndarray: The observation vector containing normalized sensor data and setpoints.
-            - pitch
-            - angular_velocity_y (pitch rate)
-            - linear_acceleration_x
-            - linear_acceleration_z
-            - left_wheel_velocity
-            - right_wheel_velocity
-            - angular_velocity_z (yaw rate)
-            - setpoint linear velocity
-            - setpoint angular velocity (steering) 
-       """
-        # --- 1. Get sensors data ---
-        # Data from encoder: left_pos, right_pos, left_speed, right_speed
-        self.wheels_position[0], self.wheels_position[1], self.wheels_velocity[0], self.wheels_velocity[1] = self._get_wheels_data()
-        
-        # Data from IMU: linear_acceleration [ax, ay, az], angular_velocity [wx, wy, wz], orientation angles (roll, pitch, yaw), direction_vector
-        self.linear_acceleration = self._get_body_linear_acceleration()
-        self.angular_velocity = self._get_robot_angular_velocity()
-        self.direction_vector, self.pitch, self.roll, self.yaw = self._get_body_orientation_angles(self.angular_velocity, self.linear_acceleration)
-        
-        # Control commands sent to the motors
-        self.ctrl = self.env.data.ctrl.copy() # Control commands sent to the motors [left_motor_command, right_motor_command]
+        Estimate wheel angular velocities [rad/s] by differentiating quantised
+        encoder positions (simulates real-hardware quadrature encoder behaviour).
 
-        # --- 2. Normalize sensor data ---
-        # Get the max wheel speed from the model
-        actuator_id = mujoco.mj_name2id(self.env.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
-        MAX_WHEEL_SPEED = self.env.model.actuator_ctrlrange[actuator_id][1]
-        # Pitch: Normalized over 90 degrees (pi/2)
-        norm_pitch = self._normalize_value(self.pitch, np.pi/2)
+        Returns [left_vel, right_vel] in rad/s.
+        """
+        raw_pos = self.env.data.sensordata[
+            [self.env.IDX_WHEEL_L_POS, self.env.IDX_WHEEL_R_POS]
+        ]
+        # Quantise to encoder resolution
+        q_pos = np.floor(raw_pos / ENCODER_RESOLUTION) * ENCODER_RESOLUTION
+        # Finite-difference velocity estimate
+        vel = (q_pos - self._prev_wheel_pos) / self.env.time_step
+        self._prev_wheel_pos[:] = q_pos
+        return vel
 
-        # Yaw normalized over 180 degrees (pi)
-        norm_yaw = self._normalize_value(self.yaw, np.pi)
+    def _update_madgwick_pitch(self, gyro: np.ndarray, accel: np.ndarray) -> float:
+        """
+        Run one Madgwick IMU update and return the estimated pitch [rad].
 
-        # Angular Velocities (Gyro): Normalized over Full Scale Range (FSR)
-        norm_w_y = self._normalize_value(self.angular_velocity[1], FSR_GYRO * DEG2RAD) # Pitch rate (real)
-        norm_w_z = self._normalize_value(self.angular_velocity[2], FSR_GYRO * DEG2RAD) # Yaw rate (real)
+        The Madgwick filter fuses gyroscope and accelerometer to give a
+        drift-free pitch estimate (yaw still drifts without magnetometer,
+        but pitch is well-conditioned for 10-second episodes).
+        """
+        self.env.Q = self._madgwick.updateIMU(
+            self.env.Q,
+            gyr=gyro,    # [wx, wy, wz] rad/s in body frame
+            acc=accel,   # [ax, ay, az] m/s² in body frame (includes gravity)
+        )
+        # Convert [w, x, y, z] → scipy [x, y, z, w]
+        q = self.env.Q
+        r = R.from_quat([q[1], q[2], q[3], q[0]])
+        _, pitch, _ = r.as_euler("xyz", degrees=False)
+        return float(pitch)
 
-        # Wheel Speeds: Normalized over maximum speed
-        norm_wheel_left_vel = self._normalize_value(self.wheels_velocity[0], MAX_WHEEL_SPEED)
-        norm_wheel_right_vel = self._normalize_value(self.wheels_velocity[1], MAX_WHEEL_SPEED)
+    # ------------------------------------------------------------------ #
+    #  Observation construction                                            #
+    # ------------------------------------------------------------------ #
 
-        norm_avg_wheel_vel = (norm_wheel_left_vel + norm_wheel_right_vel) / 2
+    def _get_obs(self, action: np.ndarray) -> np.ndarray:
+        base = self.env  # SelfBalancingRobotEnv
 
-        # Normalize control commands
-        norm_ctrl_left = self._normalize_value(self.ctrl[0], MAX_WHEEL_SPEED)
-        norm_ctrl_right = self._normalize_value(self.ctrl[1], MAX_WHEEL_SPEED)
+        # --- 1. IMU data (noisy) ---
+        gyro  = self._read_noisy_gyro()   # [wx, wy, wz] rad/s
+        accel = self._read_noisy_accel()  # [ax, ay, az] m/s²
 
-        # Normalize past values
-        norm_past_ctrl_left = self._normalize_value(self.past_ctrl[0], MAX_WHEEL_SPEED)
-        norm_past_ctrl_right = self._normalize_value(self.past_ctrl[1], MAX_WHEEL_SPEED)
+        # Pitch from Madgwick filter
+        pitch = self._update_madgwick_pitch(gyro, accel)
 
-        # --- 3. values variation ---
-        # Compute the variation of control commands over time (derivative)
-        self.ctrl_variation[0] = self._value_variation(norm_ctrl_left, norm_past_ctrl_left)
-        self.ctrl_variation[1] = self._value_variation(norm_ctrl_right, norm_past_ctrl_right)
-        
-        # --- 4. Setpoints and Errors ---
-        if np.linalg.norm(self.env.pose_control.heading) > 1e-6:
-            heading_error = self.env.pose_control.error(self.direction_vector)
-        else:
-            heading_error = 0.0
-        
-        if self.env.velocity_control.speed != 0.0:
-            velocity_error = self.env.velocity_control.error((self.wheels_velocity[0] + self.wheels_velocity[1])/2) # type: ignore
-        else:
-            velocity_error = 0.0
-        
-        speed_setpoint = self.env.velocity_control.speed
-        steering_setpoint = self.env.pose_control.heading
-        
-        # --- 5. Construct Observation Vector ---
-        obsv = np.array([
-            # Pitch and related dynamics
-            norm_pitch,                 # 1. Balance State
-            norm_w_y,                   # 2. Pitch Dynamics
+        pitch_rate = float(gyro[1])  # pitch angular rate (body Y axis)
+        yaw_rate   = float(gyro[2])  # yaw angular rate  (body Z axis)
 
-            # Yaw dynamics
-            #norm_yaw,                   # 3. Yaw Angle
-            norm_w_z,                   # 4. Yaw Dynamics
-            
-            # Wheels dynamics
-            norm_ctrl_left,             # 5. Left Motor Command
-            norm_ctrl_right,            # 6. Right Motor Command
-            self.ctrl_variation[0],     # 7. Left Motor Command Variation
-            self.ctrl_variation[1],     # 8. Right Motor Command Variation
+        # --- 2. Wheel velocities (quantised encoders, noisy) ---
+        wheel_vel = self._read_quantised_wheel_vel()  # [rad/s, rad/s]
+        fwd_wheel_vel  = (wheel_vel[0] + wheel_vel[1]) * 0.5  # avg rad/s
+        diff_wheel_vel = (wheel_vel[0] - wheel_vel[1])        # differential rad/s
 
-            # Wheels velocities
-            norm_avg_wheel_vel,           # 9. Average Wheel Speed
-            
-            # Setpoints
-            speed_setpoint,             # 10. Speed Setpoint
-            steering_setpoint[0],       # 11. Steering Setpoint (X component of the heading vector)
+        # Convert to linear speed [m/s]
+        fwd_vel_ms  = fwd_wheel_vel  * base.WHEEL_RADIUS
+        diff_vel_ms = diff_wheel_vel * base.WHEEL_RADIUS  # max = 2 * MAX_LIN_VEL when spinning in opposite directions
 
-            # Errors
-            heading_error,              # 12. Heading Error (Direction)
-            velocity_error              # 13. Velocity Error
+        # --- 3. Setpoints and errors ---
+        target_vel = base.velocity_control.speed  # [m/s]
+        vel_error  = base.velocity_control.error(fwd_vel_ms)  # [m/s]
 
+        # Heading error: use ideal quaternion (privileged in sim, replaced by
+        # compass on real hardware).  Returns signed angle ∈ (-π, π].
+        heading_error = base.pose_control.error_with_quaternion(
+            base.data.qpos[3:7]
+        )
+
+        # --- 4. Normalise all values to approximately [-1, 1] ---
+        obs = np.array([
+            pitch        / base.max_pitch,          # [0] balance state
+            pitch_rate   / GYRO_FSR_RAD,            # [1] pitch dynamics
+            yaw_rate     / GYRO_FSR_RAD,            # [2] turning rate
+            fwd_vel_ms   / base.MAX_LIN_VEL,          # [3] current forward speed
+            diff_vel_ms  / (2.0 * base.MAX_LIN_VEL), # [4] differential (turning) – max ±1 when spinning opposite
+            target_vel   / base.MAX_LIN_VEL,        # [5] desired speed
+            heading_error / np.pi,                  # [6] signed heading error
+            vel_error    / base.MAX_LIN_VEL,        # [7] velocity tracking error
+            self._prev_action[0] / base.MAX_CTRL,   # [8] previous left command
+            self._prev_action[1] / base.MAX_CTRL,   # [9] previous right command
         ], dtype=np.float32)
 
-        self.past_ctrl = self.ctrl.copy() # Update past control for the next step
+        # Store current action for next step's observation
+        self._prev_action[:] = action
 
-        return obsv
+        return obs

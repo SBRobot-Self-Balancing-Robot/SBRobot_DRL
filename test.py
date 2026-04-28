@@ -72,25 +72,21 @@ if __name__ == "__main__":
     compressed_path = f"./policies/{POLICY}"
 
     POLICY_FOLDER_PATH = extract(compressed_path)  # policies/POLICY
-    # policies/POLICY/config.json
     CONFIG_PATH = f"{POLICY_FOLDER_PATH}/config.json"
     POLICY_PATH = f"{POLICY_FOLDER_PATH}/policy"  # policies/POLICY/policy
     ENV_PATH = f"{POLICY_FOLDER_PATH}/scene.xml"  # policies/POLICY/scene.xml
 
     if not os.path.exists(ENV_PATH):
         ENV_PATH = "./models/scene.xml"
-    if not os.path.exists(CONFIG_PATH) and not os.path.exists(f"{POLICY_FOLDER_PATH}/{POLICY}.json"):
-        raise FileNotFoundError(
-            f"Configuration json file does not exist in {POLICY_FOLDER_PATH}.")
-    if not os.path.exists(f"{POLICY_PATH}.zip") and not os.path.exists(f"{POLICY_FOLDER_PATH}/{POLICY}.zip"):
-        raise FileNotFoundError(
-            f"Model file policy.zip does not exist in {POLICY_FOLDER_PATH}.")
 
-    # Rename the files with the standard names if necessary
+    # Rename legacy files if necessary
     if not os.path.exists(POLICY_PATH) and os.path.exists(f"{POLICY_FOLDER_PATH}/{POLICY}.zip"):
         os.rename(f"{POLICY_FOLDER_PATH}/{POLICY}.zip", f"{POLICY_PATH}.zip")
     if not os.path.exists(CONFIG_PATH) and os.path.exists(f"{POLICY_FOLDER_PATH}/{POLICY}.json"):
         os.rename(f"{POLICY_FOLDER_PATH}/{POLICY}.json", CONFIG_PATH)
+
+    if not os.path.exists(f"{POLICY_PATH}.zip"):
+        raise FileNotFoundError(f"Model file policy.zip does not exist in {POLICY_FOLDER_PATH}.")
 
     if INTERACTIVE:
         from pynput import keyboard
@@ -131,57 +127,56 @@ if __name__ == "__main__":
     print(f"  - Interactive: {INTERACTIVE}")
     print()
 
-    # Get the file from the path
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
-
-    print("Configuration loaded:")
-    print(json.dumps(config, indent=4))
-
-    MODEL = parse_model(config.get("model", "PPO"))
+    # Load config if available, otherwise use defaults
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r") as f:
+            config = json.load(f)
+        print("Configuration loaded:")
+        print(json.dumps(config, indent=4))
+        MODEL = parse_model(config.get("model", "PPO"))
+    else:
+        print("No config.json found (training still in progress?), using PPO defaults.")
+        MODEL = parse_model("PPO")
 
     env = make_env(environment_path=ENV_PATH, max_time=MAX_TIME)
 
     model = MODEL.load(POLICY_PATH, env=env)
     print(f"Loaded model: {POLICY_PATH} ")
 
-    # Heading update configuration
-    HEADING_UPDATE_INTERVAL = 100  # Update heading every N steps
-
     # Access the unwrapped environment to get pose_control
     base_env: SelfBalancingRobotEnv = env.unwrapped  # type: ignore
     pose_control: PoseControl = base_env.pose_control
     velocity_control: VelocityControl = base_env.velocity_control
 
+    # In non-interactive mode: let the timer-based updates in step() handle
+    # heading and velocity changes automatically (pose_control switches every
+    # MIN_HOLD_TIME–MAX_HOLD_TIME seconds, velocity_control switches every
+    # MIN_HOLD_TIME–MAX_HOLD_TIME seconds).
+    # In interactive mode: disable automatic updates and use keyboard control.
+
+    # Start curriculum at a meaningful phase so the test is representative.
+    # Phase 2 = ±0.35 m/s. If the policy was trained through the curriculum it
+    # should handle this; if it only saw phase 0 the slowness will be visible.
+    velocity_control._curriculum_phase = min(2, len(velocity_control.CURRICULUM_PHASES) - 1)
+
     obs, _ = env.reset()
-    pose_control.generate_random()
 
     for step in range(args.test_steps):
-        # ---- Heading / speed update ----
+        # ---- Reference update ----
         if INTERACTIVE:
-            base_env.training = False
-            # Arrow-key control
+            base_env.training = False  # disables timer-based updates in step()
             if keyboard.Key.left in keys_pressed:
-                angle = pose_control.heading_angle + TURN_RATE
-                pose_control.heading_angle = np.array([np.cos(angle), np.sin(angle)])
+                pose_control.heading_angle = pose_control.heading_angle + TURN_RATE
             if keyboard.Key.right in keys_pressed:
-                angle = pose_control.heading_angle - TURN_RATE
-                pose_control.heading_angle = np.array([np.cos(angle), np.sin(angle)])
+                pose_control.heading_angle = pose_control.heading_angle - TURN_RATE
             if keyboard.Key.up in keys_pressed:
                 velocity_control.speed = min(velocity_control.speed + SPEED_STEP, MAX_SPEED)
             if keyboard.Key.down in keys_pressed:
                 velocity_control.speed = max(velocity_control.speed - SPEED_STEP, -MAX_SPEED)
-            if keyboard.Key.up not in keys_pressed and keyboard.Key.down not in keys_pressed:
-                velocity_control.speed = 0.0
             if 'r' in keys_pressed:
-                pose_control.reset()
+                pose_control.generate_random()
                 velocity_control.speed = 0.0
-        else:
-            # Automatic random heading updates
-            if step > 0 and step % HEADING_UPDATE_INTERVAL == 0:
-                old_angle = np.degrees(pose_control.heading_angle)
-                pose_control.update()
-                new_angle = np.degrees(pose_control.heading_angle)
+        # Non-interactive: timer-based updates fire automatically inside step()
 
         action, _states = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, _ = env.step(action)
@@ -195,4 +190,13 @@ if __name__ == "__main__":
             obs, _ = env.reset()
             pose_control.generate_random()
 
-    compress_and_remove(POLICY_FOLDER_PATH)
+    # Only recompress if the folder was extracted from an archive (not a live training folder)
+    archive_existed = (
+        os.path.exists(f"{compressed_path}.tar.gz") or
+        os.path.exists(f"{compressed_path}.tgz") or
+        os.path.exists(f"{compressed_path}.tar") or
+        os.path.exists(f"{compressed_path}.zip") or
+        os.path.exists(f"{compressed_path}.gz")
+    )
+    if archive_existed:
+        compress_and_remove(POLICY_FOLDER_PATH)

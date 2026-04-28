@@ -123,15 +123,16 @@ class WandbCallback(BaseCallback):
         return True
 
 def save_configuration(env, xml: str, model: str, folder_name: str, iterations: int, processes: int):
-    # Save the configuration
     path = f"./policies/{folder_name}"
     os.makedirs(path, exist_ok=True)
 
     unwrapped_env = env.unwrapped
+
+    # Walk the wrapper chain to find RewardWrapper
     rw = env
     while hasattr(rw, "env") and not isinstance(rw, RewardWrapper):
         rw = rw.env
-    reward_calc = rw.reward_calculator if isinstance(rw, RewardWrapper) else None
+    rc = rw.reward_calculator if isinstance(rw, RewardWrapper) else None
 
     with open(f"{path}/config.json", 'w') as f:
         config = {
@@ -140,22 +141,31 @@ def save_configuration(env, xml: str, model: str, folder_name: str, iterations: 
             "iterations": iterations,
             "processes": processes,
             "policy": "policy",
-            "max_time": unwrapped_env.max_time if hasattr(unwrapped_env, 'max_time') else None,
-            "alpha_values": {
-                "heading": reward_calc.heading_weight if reward_calc else None,
-                "velocity": reward_calc.velocity_weight if reward_calc else None,
-                "control_variety": reward_calc.control_variety_weight if reward_calc else None
-            }
+            "max_time": getattr(unwrapped_env, "max_time", None),
+            "reward_weights": {
+                "w_balance":  rc.w_balance  if rc else None,
+                "w_velocity": rc.w_velocity if rc else None,
+                "w_heading":  rc.w_heading  if rc else None,
+                "w_smooth":   rc.w_smooth   if rc else None,
+            },
+            "reward_sigmas": {
+                "sigma_pitch": rc.sigma_pitch if rc else None,
+                "sigma_vel":   rc.sigma_vel   if rc else None,
+            },
         }
         json.dump(config, f, indent=4)
 
-def make_env(render_mode=None):
+def make_env(render_mode=None, initial_curriculum_phase: int = 0):
     """
     Creates an instance of the SelfBalancingRobotEnv environment wrapped with RewardWrapper.
+    Pass initial_curriculum_phase>0 to resume training from a mid-curriculum checkpoint
+    without repeating the early phases.
     """
     def _init():
-        # Added render_mode argument support for video generation
-        environment = SelfBalancingRobotEnv() if render_mode else SelfBalancingRobotEnv()
+        environment = SelfBalancingRobotEnv(
+            initial_curriculum_phase=initial_curriculum_phase,
+            render_mode=render_mode,
+        )
         environment = ObservationWrapper(environment)
         environment = RewardWrapper(environment)
         environment = Monitor(environment)
@@ -182,6 +192,7 @@ if __name__ == "__main__":
     HEADLESS = args.headless
     POLICY_SCP = args.policy_scp
     WANDB = args.wandb
+    CURRICULUM_PHASE = args.curriculum_phase
 
     print("\n--- TRAINING CONFIGURATION ---")
     print(f"* XML File: {XML_FILE}")
@@ -200,6 +211,8 @@ if __name__ == "__main__":
     print(f"* Headless: {HEADLESS}")
     print(f"* Policy SCP: {POLICY_SCP}")
     print(f"* WandB: {WANDB}")
+    print(f"* Curriculum Phase: {CURRICULUM_PHASE}")
+    print(f"* Entropy Coef: {args.ent_coef}")
     print("-----------------------------\n")
     
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -233,16 +246,17 @@ if __name__ == "__main__":
         )
     
     # Wrapper for the algorithm
-    vec_env = SubprocVecEnv([make_env() for _ in range(PROCESSES)])
+    vec_env = SubprocVecEnv([make_env(initial_curriculum_phase=CURRICULUM_PHASE) for _ in range(PROCESSES)])
 
-    # Load model if it exists
-    model_load_path = f"{POLICIES_FOLDER}/{MODEL_FILE}/{MODEL_FILE}"
+    # Load model if it exists — the model is always saved as "policy.zip" inside the folder
+    model_load_path = f"{POLICIES_FOLDER}/{MODEL_FILE}/policy"
     start_fresh = True
     
     # Create model structure first
-    model_kwargs = {"device": DEVICE, "verbose": 1}
+    model_kwargs = {"device": DEVICE, "verbose": 1, "learning_rate": args.learning_rate}
     if MODEL in [PPO, A2C]:
         model_kwargs["n_steps"] = N_STEPS
+        model_kwargs["ent_coef"] = args.ent_coef
         policy_type = "MlpPolicy"
     elif MODEL in [SAC, TD3, DDPG]:
         model_kwargs["buffer_size"] = BUFFER_SIZE
@@ -327,51 +341,40 @@ if __name__ == "__main__":
         # Note: We create a single env, not vectorized, for video recording
         eval_env = make_env(render_mode="rgb_array")()
         
-        if not HEADLESS:
-            try:
-                obs, _ = eval_env.reset()
-                done = False
-                truncated = False
-                frames = []
-                
-                while not (done or truncated):
-                    # Predict
-                    action, _ = model.predict(obs, deterministic=True)
-                    obs, reward, terminated, truncated, _ = eval_env.step(action)
-                    
-                    # Render and capture frame
-                    frame = eval_env.render()
-                    if frame is not None:
-                        frames.append(frame)
-                    
-                    done = terminated
-                    
-                    # Break if too long (failsafe)
-                    if len(frames) > 2000: 
-                        break
+        try:
+            obs, _ = eval_env.reset()
+            done = False
+            truncated = False
+            frames = []
 
-                # Save video using imageio
-                if frames:
-                    imageio.mimsave(eval_video_filename, frames, fps=30)
-                    print(f"Video saved to {eval_video_filename}")
-                else:
-                    print("No frames captured, video not saved.")
+            while not (done or truncated):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, _ = eval_env.step(action)
 
-            except Exception as e:
-                print(f"Error during video evaluation: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                # Forza la chiusura dell'ambiente e del viewer
-                if 'eval_env' in locals():
-                    eval_env.close()
-                    # Se l'env ha un attributo viewer (comune in MuJoCo), lo chiudiamo esplicitamente
-                    if hasattr(eval_env.unwrapped, 'viewer') and eval_env.unwrapped.viewer is not None:
-                        eval_env.unwrapped.viewer.close()
-                
-                # Piccola pausa per dare tempo al sistema operativo di liberare la memoria grafica
-                time.sleep(1) 
-                del eval_env
+                frame = eval_env.render()
+                if frame is not None:
+                    frames.append(frame)
+
+                done = terminated
+
+                if len(frames) > 2000:
+                    break
+
+            if frames:
+                imageio.mimsave(eval_video_filename, frames, fps=30)
+                print(f"Video saved to {eval_video_filename}")
+            else:
+                print("No frames captured, video not saved.")
+
+        except Exception as e:
+            print(f"Error during video evaluation: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if 'eval_env' in locals():
+                eval_env.close()
+            time.sleep(1)
+            del eval_env
 
     print("\n--- Training Loop Complete ---")
 

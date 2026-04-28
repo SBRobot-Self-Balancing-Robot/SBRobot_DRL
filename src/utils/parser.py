@@ -58,6 +58,18 @@ def parse_train_arguments():
     parser.add_argument("--wandb", action="store_true",
                         help="Use Weights & Biases for experiment tracking (default: False)", default=False)
 
+    parser.add_argument("--learning-rate", type=float, default=3e-4,
+                        help="Learning rate (default: 3e-4). Halve to 1.5e-4 if in plateau.")
+
+    parser.add_argument("--ent-coef", type=float, default=0.0,
+                        help="Entropy coefficient for PPO/A2C (default: 0.0). "
+                             "Use 0.005 to prevent std collapse in hard curriculum phases.")
+
+    parser.add_argument("--curriculum-phase", type=int, default=0,
+                        help="Initial curriculum phase (0-3). Use >0 to resume from a "
+                             "mid-curriculum checkpoint without repeating early phases. "
+                             "Phase 0=±0.10 m/s, 1=±0.20, 2=±0.35, 3=±0.50 m/s")
+
     return parser.parse_args()
 
 
