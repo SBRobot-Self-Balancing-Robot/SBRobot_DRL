@@ -72,9 +72,11 @@ class SelfBalancingRobotEnv(gym.Env):
         frame_skip: int = 10,
         initial_curriculum_phase: int = 0,
         render_mode: str = None,
+        randomization_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.render_mode = render_mode
+        self.randomization_scale = randomization_scale  # 0.0 = no randomization (test), 1.0 = full (train)
         self.viewer = None
         self._offscreen_renderer = None
 
@@ -225,20 +227,26 @@ class SelfBalancingRobotEnv(gym.Env):
         self.data.qvel[2:] = 0.0
 
     def _randomize_masses(self) -> None:
+        s = self.randomization_scale
         for i in range(self.model.nbody):
-            self.model.body_mass[i] = self._initial_masses[i] * np.random.uniform(0.8, 1.2)
+            lo = 1.0 - 0.20 * s
+            hi = 1.0 + 0.20 * s
+            self.model.body_mass[i] = self._initial_masses[i] * np.random.uniform(lo, hi)
 
     def _randomize_com(self) -> None:
+        s = self.randomization_scale
+        max_offset = 0.008 * s  # up to ±8mm at full scale, 0 at test
         for i in range(self.model.nbody):
             self.model.body_ipos[i] = (
-                self._original_body_ipos[i] + np.random.uniform(-0.010, 0.010, size=3)
+                self._original_body_ipos[i] + np.random.uniform(-max_offset, max_offset, size=3)
             )
 
     def _randomize_imu_pose(self) -> None:
-        pos_offset = np.random.uniform(-0.005, 0.005, size=3)
+        s = self.randomization_scale
+        pos_offset = np.random.uniform(-0.005 * s, 0.005 * s, size=3)
         self.model.body_pos[self._imu_id] = self._original_imu_pos + pos_offset
 
-        euler_off = np.random.uniform(-0.01, 0.01, size=3)
+        euler_off = np.random.uniform(-0.01 * s, 0.01 * s, size=3)
         q_off     = R.from_euler("xyz", euler_off).as_quat()
         q_off_mj  = np.array([q_off[3], q_off[0], q_off[1], q_off[2]])
         new_quat  = np.zeros(4, dtype=np.float64)
@@ -246,19 +254,24 @@ class SelfBalancingRobotEnv(gym.Env):
         self.model.body_quat[self._imu_id] = new_quat
 
     def _randomize_actuator_gains(self) -> None:
+        s = self.randomization_scale
         for name in ("left_motor", "right_motor"):
             aid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            self.model.actuator_gainprm[aid][0] = np.random.uniform(16.0, 24.0)
+            # Independent L/R gains to simulate real motor asymmetry
+            self.model.actuator_gainprm[aid][0] = np.random.uniform(
+                20.0 - 4.0 * s, 20.0 + 4.0 * s
+            )
 
     def _randomize_wheel_friction(self) -> None:
-        friction = [
-            np.random.uniform(0.81, 0.99),    # sliding
-            np.random.uniform(0.045, 0.055),  # torsional
-            np.random.uniform(0.0018, 0.0022),  # rolling
-        ]
+        s = self.randomization_scale
+        # Independent L/R friction to simulate floor/wheel asymmetry
         for name in ("WheelL_collision", "WheelR_collision"):
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
-            self.model.geom_friction[gid] = friction
+            self.model.geom_friction[gid] = [
+                np.random.uniform(0.90 - 0.09 * s, 0.90 + 0.09 * s),   # sliding
+                np.random.uniform(0.050 - 0.005 * s, 0.050 + 0.005 * s),  # torsional
+                np.random.uniform(0.0020 - 0.0002 * s, 0.0020 + 0.0002 * s),  # rolling
+            ]
 
     # ------------------------------------------------------------------ #
     #  Rendering                                                           #

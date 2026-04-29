@@ -19,8 +19,10 @@ def make_env(environment_path="./models/scene.xml", max_time=float("inf")):
     Crea un'istanza dell'ambiente SelfBalancingRobotEnv con rendering.
     """
     env = SelfBalancingRobotEnv(
-        environment_path=environment_path, 
-        max_time=max_time)
+        environment_path=environment_path,
+        max_time=max_time,
+        randomization_scale=0.0,
+    )
     env = ObservationWrapper(env)
     env = Monitor(env)
     return env

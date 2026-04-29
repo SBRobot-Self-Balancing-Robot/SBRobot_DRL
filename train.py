@@ -165,6 +165,7 @@ def make_env(render_mode=None, initial_curriculum_phase: int = 0):
         environment = SelfBalancingRobotEnv(
             initial_curriculum_phase=initial_curriculum_phase,
             render_mode=render_mode,
+            randomization_scale=1.0,
         )
         environment = ObservationWrapper(environment)
         environment = RewardWrapper(environment)
