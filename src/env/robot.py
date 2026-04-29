@@ -226,12 +226,12 @@ class SelfBalancingRobotEnv(gym.Env):
 
     def _randomize_masses(self) -> None:
         for i in range(self.model.nbody):
-            self.model.body_mass[i] = self._initial_masses[i] * np.random.uniform(0.9, 1.1)
+            self.model.body_mass[i] = self._initial_masses[i] * np.random.uniform(0.8, 1.2)
 
     def _randomize_com(self) -> None:
         for i in range(self.model.nbody):
             self.model.body_ipos[i] = (
-                self._original_body_ipos[i] + np.random.uniform(-0.002, 0.002, size=3)
+                self._original_body_ipos[i] + np.random.uniform(-0.010, 0.010, size=3)
             )
 
     def _randomize_imu_pose(self) -> None:

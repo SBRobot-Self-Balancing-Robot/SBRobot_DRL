@@ -112,7 +112,7 @@ if __name__ == "__main__":
         # Tuning parameters for arrow-key control
         TURN_RATE  = np.deg2rad(3)   # rotation per step when Left/Right is held
         SPEED_STEP = 0.02            # speed increment per step when Up/Down is held
-        MAX_SPEED  = 1.5             # m/s
+        MAX_SPEED  = 0.50            # m/s – phase-3 curriculum limit (physical max = 0.548)
 
         print("Arrow-key control enabled:")
         print("  Up / Down    = increase / decrease speed")

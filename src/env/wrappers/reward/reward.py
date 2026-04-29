@@ -56,11 +56,17 @@ SIGMA_VEL:   float = 0.35  # m/s  – covers full phase-3 range (±0.50 m/s).
                             # σ=0.25 collapses to ~0 gradient at phase-3 max (0.50 m/s);
                             # σ=0.35 keeps gradient = -1.17 there.
 
+# Pitch equilibrium gain: robot should lean proportionally to velocity error.
+# At cruise (vel_error=0) → pitch_ref=0 (upright). During acceleration → lean forward.
+# K=0.18 rad/(m/s): at 0.5 m/s error → 0.09 rad (≈5°) lean — physically realistic.
+PITCH_VEL_GAIN: float = 0.18  # rad per m/s of velocity error
+
 # Component weights
 W_BALANCE:  float = 1.0   # survival bonus: incentivises staying upright
-W_VELOCITY: float = 1.5   # velocity tracking
+W_VELOCITY: float = 2.0   # increased from 1.5 – stronger incentive for fast velocity tracking
 W_HEADING:  float = 2.0   # heading tracking
-W_SMOOTH:   float = 0.15  # increased from 0.05 – penalises oscillations at high speed
+W_SMOOTH:   float = 0.15  # penalises action jerk – reduces oscillations at high speed
+W_YAW:      float = 0.10  # penalises yaw rate – discourages heading drift during acceleration
 
 # Terminal reward
 FALL_PENALTY: float = -20.0
@@ -120,33 +126,37 @@ class RewardCalculator:
     """
 
     def __init__(self) -> None:
-        self.w_balance:  float = W_BALANCE
-        self.w_velocity: float = W_VELOCITY
-        self.w_heading:  float = W_HEADING
-        self.w_smooth:   float = W_SMOOTH
-        self.sigma_pitch: float = SIGMA_PITCH
-        self.sigma_vel:   float = SIGMA_VEL
+        self.w_balance:     float = W_BALANCE
+        self.w_velocity:    float = W_VELOCITY
+        self.w_heading:     float = W_HEADING
+        self.w_smooth:      float = W_SMOOTH
+        self.w_yaw:         float = W_YAW
+        self.sigma_pitch:   float = SIGMA_PITCH
+        self.sigma_vel:     float = SIGMA_VEL
+        self.pitch_vel_gain: float = PITCH_VEL_GAIN
 
     def compute(self, env: SelfBalancingRobotEnv, delta_action: np.ndarray) -> float:
         pitch         = self._ideal_pitch(env)
         vel_error     = self._ideal_velocity_error(env)
         heading_error = self._ideal_heading_error(env)
 
-        # Balance and velocity: Gaussian kernels (tight precision incentive)
-        r_balance  = self._gaussian_kernel(pitch,     self.sigma_pitch)
-        r_velocity = self._gaussian_kernel(vel_error, self.sigma_vel)
+        # Pitch reference: robot should lean proportionally to velocity error.
+        # At cruise (vel_error=0) → pitch_ref=0. Accelerating → lean forward.
+        pitch_ref = self.pitch_vel_gain * vel_error
+        r_balance = self._gaussian_kernel(pitch - pitch_ref, self.sigma_pitch)
 
-        # Heading: cosine kernel — gives non-zero gradient at ALL error magnitudes.
-        # A Gaussian with σ=0.30 rad gives ~0 gradient beyond 45° error, making
-        # the policy blind to large heading deviations. Cosine has gradient everywhere.
-        r_heading = self._cosine_kernel(heading_error)
+        r_velocity = self._gaussian_kernel(vel_error, self.sigma_vel)
+        r_heading  = self._cosine_kernel(heading_error)
 
         # Action-smoothness penalty
         r_smooth = -self.w_smooth * float(np.mean((delta_action / env.MAX_CTRL) ** 2))
 
-        # Balance gates everything: no reward for tracking while tilted
+        # Yaw-rate penalty: discourages unwanted rotation during velocity changes.
+        ideal_yaw_rate = float(env.data.sensordata[env.IDX_IDEAL_GYRO][2])
+        r_yaw = -self.w_yaw * (ideal_yaw_rate / 4.363) ** 2
+
         r_task = r_balance * (self.w_balance + self.w_velocity * r_velocity + self.w_heading * r_heading)
-        return float(r_task + r_smooth)
+        return float(r_task + r_smooth + r_yaw)
 
     # ------------------------------------------------------------------ #
     #  Ideal-sensor helpers                                                #

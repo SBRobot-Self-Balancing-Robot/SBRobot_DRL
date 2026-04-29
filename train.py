@@ -257,6 +257,7 @@ if __name__ == "__main__":
     if MODEL in [PPO, A2C]:
         model_kwargs["n_steps"] = N_STEPS
         model_kwargs["ent_coef"] = args.ent_coef
+        model_kwargs["gamma"] = args.gamma
         policy_type = "MlpPolicy"
     elif MODEL in [SAC, TD3, DDPG]:
         model_kwargs["buffer_size"] = BUFFER_SIZE

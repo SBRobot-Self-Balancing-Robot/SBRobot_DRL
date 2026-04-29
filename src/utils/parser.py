@@ -65,6 +65,10 @@ def parse_train_arguments():
                         help="Entropy coefficient for PPO/A2C (default: 0.0). "
                              "Use 0.005 to prevent std collapse in hard curriculum phases.")
 
+    parser.add_argument("--gamma", type=float, default=0.99,
+                        help="Discount factor (default: 0.99). Lower (e.g. 0.97) makes "
+                             "the policy more reactive to immediate rewards.")
+
     parser.add_argument("--curriculum-phase", type=int, default=0,
                         help="Initial curriculum phase (0-3). Use >0 to resume from a "
                              "mid-curriculum checkpoint without repeating early phases. "
