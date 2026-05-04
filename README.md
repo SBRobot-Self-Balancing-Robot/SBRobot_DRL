@@ -2,6 +2,16 @@
 
 Training and testing a two-wheeled self-balancing robot (Segway-type) using PPO via Stable Baselines3 and MuJoCo simulation.
 
+## Results
+
+Training videos from the best checkpoint (`PPO_v2`):
+
+| Iteration | Video |
+|---|---|
+| Cycle 8 | [policies/PPO_v2/videos/run_iter_8.mp4](policies/PPO_v2/videos/run_iter_8.mp4) |
+| Cycle 9 | [policies/PPO_v2/videos/run_iter_9.mp4](policies/PPO_v2/videos/run_iter_9.mp4) |
+| Cycle 7 | [policies/PPO_v2/videos/run_iter_7.mp4](policies/PPO_v2/videos/run_iter_7.mp4) |
+
 ---
 
 ## Setup

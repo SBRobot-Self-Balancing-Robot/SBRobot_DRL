@@ -6,6 +6,7 @@ import json
 import tarfile
 import numpy as np
 from stable_baselines3.common.monitor import Monitor
+from sb3_contrib import RecurrentPPO
 from src.env.wrappers.observations import ObservationWrapper
 from src.env.robot import SelfBalancingRobotEnv
 from src.utils.files import compress_and_remove
@@ -22,6 +23,7 @@ def make_env(environment_path="./models/scene.xml", max_time=float("inf")):
         environment_path=environment_path,
         max_time=max_time,
         randomization_scale=0.0,
+        action_filter_alpha=0.5,
     )
     env = ObservationWrapper(env)
     env = Monitor(env)
@@ -130,20 +132,28 @@ if __name__ == "__main__":
     print()
 
     # Load config if available, otherwise use defaults
-    if os.path.exists(CONFIG_PATH):
+    IS_LSTM = False
+    if args.model is not None:
+        MODEL = parse_model(args.model)
+        print(f"Model override from --model flag: {args.model}")
+    elif os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r") as f:
             config = json.load(f)
         print("Configuration loaded:")
         print(json.dumps(config, indent=4))
         MODEL = parse_model(config.get("model", "PPO"))
+        IS_LSTM = config.get("policy_type", "MlpPolicy") == "MlpLstmPolicy"
     else:
-        print("No config.json found (training still in progress?), using PPO defaults.")
+        print("No config.json found (training still in progress?), using PPO defaults. Use --model to override.")
         MODEL = parse_model("PPO")
+
+    if IS_LSTM:
+        MODEL = RecurrentPPO
 
     env = make_env(environment_path=ENV_PATH, max_time=MAX_TIME)
 
     model = MODEL.load(POLICY_PATH, env=env)
-    print(f"Loaded model: {POLICY_PATH} ")
+    print(f"Loaded model: {POLICY_PATH} ({'LSTM' if IS_LSTM else 'MLP'})")
 
     # Access the unwrapped environment to get pose_control
     base_env: SelfBalancingRobotEnv = env.unwrapped  # type: ignore
@@ -162,6 +172,8 @@ if __name__ == "__main__":
     velocity_control._curriculum_phase = min(2, len(velocity_control.CURRICULUM_PHASES) - 1)
 
     obs, _ = env.reset()
+    lstm_states = None
+    episode_start = np.ones((1,), dtype=bool)
 
     for step in range(args.test_steps):
         # ---- Reference update ----
@@ -180,7 +192,14 @@ if __name__ == "__main__":
                 velocity_control.speed = 0.0
         # Non-interactive: timer-based updates fire automatically inside step()
 
-        action, _states = model.predict(obs, deterministic=True)
+        if IS_LSTM:
+            action, lstm_states = model.predict(obs, state=lstm_states,
+                                                episode_start=episode_start,
+                                                deterministic=True)
+            episode_start = np.zeros((1,), dtype=bool)
+        else:
+            action, _ = model.predict(obs, deterministic=True)
+
         obs, reward, terminated, truncated, _ = env.step(action)
         try:
             env.render()
@@ -190,6 +209,8 @@ if __name__ == "__main__":
             break
         if terminated or truncated:
             obs, _ = env.reset()
+            lstm_states = None
+            episode_start = np.ones((1,), dtype=bool)
             pose_control.generate_random()
 
     # Only recompress if the folder was extracted from an archive (not a live training folder)

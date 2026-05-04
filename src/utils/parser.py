@@ -41,6 +41,14 @@ def parse_train_arguments():
     parser.add_argument("--buffer-size", type=int, default=100000,
                         help="Replay buffer size (for SAC/TD3/DDPG, default: 100000)")
 
+    parser.add_argument("--gradient-steps", type=int, default=1,
+                        help="Gradient updates per env step (SAC/TD3/DDPG). "
+                             "-1 = match n_envs (more thorough, slower). 1 = fast (default: 1)")
+
+    parser.add_argument("--learning-starts", type=int, default=10000,
+                        help="Steps before SAC/TD3/DDPG starts learning (default: 10000). "
+                             "Fills replay buffer with random exploration first.")
+
     parser.add_argument("--device", type=str, default="cpu",
                         help="Device to use for training (default: cpu). Other options: cpu, cuda, mps")
 
@@ -69,6 +77,10 @@ def parse_train_arguments():
                         help="Discount factor (default: 0.99). Lower (e.g. 0.97) makes "
                              "the policy more reactive to immediate rewards.")
 
+    parser.add_argument("--policy-type", type=str, default="MlpPolicy",
+                        choices=["MlpPolicy", "MlpLstmPolicy"],
+                        help="Policy architecture: MlpPolicy (default) or MlpLstmPolicy (LSTM, PPO only)")
+
     parser.add_argument("--curriculum-phase", type=int, default=0,
                         help="Initial curriculum phase (0-3). Use >0 to resume from a "
                              "mid-curriculum checkpoint without repeating early phases. "
@@ -88,6 +100,10 @@ def parse_test_arguments():
     parser.add_argument("--path", type=str,
                         default=None,
                         help="Path to the model to test")
+
+    parser.add_argument("--model", type=str, default=None,
+                        help="Algorithm to use: PPO, SAC, TD3, A2C, DDPG. "
+                             "If omitted, reads from config.json (or defaults to PPO).")
 
     # parser.add_argument("--environment-path", type=str, default="./models/scene.xml",
     #                    help="Path to the environment XML file (default: ./models/scene.xml)")

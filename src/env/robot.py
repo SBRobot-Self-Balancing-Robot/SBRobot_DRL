@@ -73,10 +73,15 @@ class SelfBalancingRobotEnv(gym.Env):
         initial_curriculum_phase: int = 0,
         render_mode: str = None,
         randomization_scale: float = 1.0,
+        action_filter_alpha: float = 0.0,
     ) -> None:
         super().__init__()
         self.render_mode = render_mode
         self.randomization_scale = randomization_scale  # 0.0 = no randomization (test), 1.0 = full (train)
+        # Low-pass filter on applied actions: 0.0 = off, higher = more smoothing.
+        # Eliminates high-frequency trembling without reducing step-response reactivity.
+        self._action_filter_alpha = action_filter_alpha
+        self._filtered_action: np.ndarray = np.zeros(2)
         self.viewer = None
         self._offscreen_renderer = None
 
@@ -132,7 +137,12 @@ class SelfBalancingRobotEnv(gym.Env):
         self, action: np.ndarray
     ) -> T.Tuple[np.ndarray, float, bool, bool, dict]:
         action = np.clip(action, self.action_space.low, self.action_space.high)
-        self.data.ctrl[:] = action
+        if self._action_filter_alpha > 0.0:
+            self._filtered_action = (self._action_filter_alpha * self._filtered_action
+                                     + (1.0 - self._action_filter_alpha) * action)
+            self.data.ctrl[:] = self._filtered_action
+        else:
+            self.data.ctrl[:] = action
 
         if self.training:
             self.velocity_control.update(dt=self.time_step)
@@ -163,6 +173,7 @@ class SelfBalancingRobotEnv(gym.Env):
             self.velocity_control.report_episode_result(success)
 
         mujoco.mj_resetData(self.model, self.data)
+        self._filtered_action[:] = 0.0
         self._initialize_random_state()
 
         return np.zeros(10, dtype=np.float32), {}

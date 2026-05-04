@@ -24,6 +24,7 @@ from stable_baselines3 import SAC, PPO, TD3, A2C, DDPG
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
+from sb3_contrib import RecurrentPPO
 
 # --- Utility Functions for Plotting (Replica of your reference utils) ---
 def plot_data_line(dfs, xaxis, value, condition, smooth, title, output):
@@ -99,6 +100,21 @@ class RewardCollectorCallback(BaseCallback):
 
         return True
 
+# --- Progress Callback ---
+class ProgressCallback(BaseCallback):
+    def __init__(self, total_timesteps: int, print_every: int = 100_000):
+        super().__init__()
+        self._total = total_timesteps
+        self._print_every = print_every
+        self._last_print = 0
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_print >= self._print_every:
+            pct = 100.0 * self.num_timesteps / self._total
+            print(f"[Step {self.num_timesteps:>10,} / {self._total:,}  ({pct:.1f}%)]")
+            self._last_print = self.num_timesteps
+        return True
+
 # --- WandB Callback (Preserved) ---
 class WandbCallback(BaseCallback):
     def __init__(self, verbose=0):
@@ -122,7 +138,7 @@ class WandbCallback(BaseCallback):
                 })
         return True
 
-def save_configuration(env, xml: str, model: str, folder_name: str, iterations: int, processes: int):
+def save_configuration(env, xml: str, model: str, policy_type: str, folder_name: str, iterations: int, processes: int):
     path = f"./policies/{folder_name}"
     os.makedirs(path, exist_ok=True)
 
@@ -138,6 +154,7 @@ def save_configuration(env, xml: str, model: str, folder_name: str, iterations: 
         config = {
             "scene": xml,
             "model": model,
+            "policy_type": policy_type,
             "iterations": iterations,
             "processes": processes,
             "policy": "policy",
@@ -166,6 +183,7 @@ def make_env(render_mode=None, initial_curriculum_phase: int = 0):
             initial_curriculum_phase=initial_curriculum_phase,
             render_mode=render_mode,
             randomization_scale=1.0,
+            action_filter_alpha=0.5,
         )
         environment = ObservationWrapper(environment)
         environment = RewardWrapper(environment)
@@ -179,6 +197,10 @@ if __name__ == "__main__":
     args = parse_train_arguments()
     XML_FILE = args.xml_file
     MODEL = parse_model(args.model)
+    POLICY_TYPE = args.policy_type
+    # LSTM requires RecurrentPPO instead of PPO
+    if POLICY_TYPE == "MlpLstmPolicy" and MODEL == PPO:
+        MODEL = RecurrentPPO
     PROCESSES = args.processes
     ITERATIONS = args.iterations
     MODEL_FILE = args.policy
@@ -255,16 +277,20 @@ if __name__ == "__main__":
     
     # Create model structure first
     model_kwargs = {"device": DEVICE, "verbose": 1, "learning_rate": args.learning_rate}
-    if MODEL in [PPO, A2C]:
+    if MODEL in [PPO, A2C, RecurrentPPO]:
         model_kwargs["n_steps"] = N_STEPS
         model_kwargs["ent_coef"] = args.ent_coef
         model_kwargs["gamma"] = args.gamma
-        policy_type = "MlpPolicy"
+        policy_type = POLICY_TYPE
     elif MODEL in [SAC, TD3, DDPG]:
         model_kwargs["buffer_size"] = BUFFER_SIZE
+        model_kwargs["gamma"] = args.gamma
+        model_kwargs["ent_coef"] = "auto"
+        model_kwargs["gradient_steps"] = args.gradient_steps
+        model_kwargs["learning_starts"] = args.learning_starts
         policy_type = "MlpPolicy"
     else:
-        policy_type = "MlpPolicy"
+        policy_type = POLICY_TYPE
 
     try:
         if os.path.exists(model_load_path + ".zip"):
@@ -279,10 +305,10 @@ if __name__ == "__main__":
 
     # --- Setup Callbacks ---
     reward_callback = RewardCollectorCallback()
-    callbacks = [reward_callback]
+    callbacks = [reward_callback, ProgressCallback(total_timesteps=ITERATIONS)]
     if WANDB:
         callbacks.append(WandbCallback())
-    
+
     combined_callback = CallbackList(callbacks)
 
     # --- Training Loop Configuration ---
@@ -384,7 +410,8 @@ if __name__ == "__main__":
     temp_env = make_env()()
     save_configuration(
         env=temp_env, xml=XML_FILE, model=MODEL.__name__,
-        folder_name=FOLDER_PREFIX, iterations=ITERATIONS, processes=PROCESSES
+        policy_type=policy_type, folder_name=FOLDER_PREFIX,
+        iterations=ITERATIONS, processes=PROCESSES
     )
     temp_env.close()
 
