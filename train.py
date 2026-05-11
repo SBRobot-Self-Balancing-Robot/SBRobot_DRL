@@ -162,12 +162,13 @@ def save_configuration(env, xml: str, model: str, policy_type: str, folder_name:
             "reward_weights": {
                 "w_balance":  rc.w_balance  if rc else None,
                 "w_velocity": rc.w_velocity if rc else None,
-                "w_heading":  rc.w_heading  if rc else None,
+                "w_yaw":      rc.w_yaw      if rc else None,
                 "w_smooth":   rc.w_smooth   if rc else None,
             },
             "reward_sigmas": {
                 "sigma_pitch": rc.sigma_pitch if rc else None,
                 "sigma_vel":   rc.sigma_vel   if rc else None,
+                "sigma_yaw":   rc.sigma_yaw   if rc else None,
             },
         }
         json.dump(config, f, indent=4)
@@ -281,6 +282,9 @@ if __name__ == "__main__":
         model_kwargs["n_steps"] = N_STEPS
         model_kwargs["ent_coef"] = args.ent_coef
         model_kwargs["gamma"] = args.gamma
+        model_kwargs["policy_kwargs"] = {
+            "net_arch": dict(pi=[256, 256], vf=[256, 256])
+        }
         policy_type = POLICY_TYPE
     elif MODEL in [SAC, TD3, DDPG]:
         model_kwargs["buffer_size"] = BUFFER_SIZE
@@ -288,6 +292,7 @@ if __name__ == "__main__":
         model_kwargs["ent_coef"] = "auto"
         model_kwargs["gradient_steps"] = args.gradient_steps
         model_kwargs["learning_starts"] = args.learning_starts
+        model_kwargs["policy_kwargs"] = {"net_arch": [256, 256]}
         policy_type = "MlpPolicy"
     else:
         policy_type = POLICY_TYPE

@@ -4,7 +4,7 @@ Core Gymnasium environment for the self-balancing two-wheeled robot.
 Responsibilities:
   - Load MuJoCo model and manage simulation stepping.
   - Apply domain randomisation at each episode reset for robustness.
-  - Manage PoseControl and VelocityControl reference generators.
+  - Manage YawRateControl and VelocityControl reference generators.
   - Report episode outcome to VelocityControl for curriculum advancement.
 
 Observations and rewards are computed by the wrappers layered on top.
@@ -19,7 +19,7 @@ from mujoco import MjModel, MjData
 from mujoco.viewer import launch_passive
 from scipy.spatial.transform import Rotation as R
 
-from src.env.control.pose_control import PoseControl
+from src.env.control.yaw_rate_control import YawRateControl
 from src.env.control.velocity_control import VelocityControl
 
 
@@ -77,9 +77,7 @@ class SelfBalancingRobotEnv(gym.Env):
     ) -> None:
         super().__init__()
         self.render_mode = render_mode
-        self.randomization_scale = randomization_scale  # 0.0 = no randomization (test), 1.0 = full (train)
-        # Low-pass filter on applied actions: 0.0 = off, higher = more smoothing.
-        # Eliminates high-frequency trembling without reducing step-response reactivity.
+        self.randomization_scale = randomization_scale
         self._action_filter_alpha = action_filter_alpha
         self._filtered_action: np.ndarray = np.zeros(2)
         self.viewer = None
@@ -114,7 +112,7 @@ class SelfBalancingRobotEnv(gym.Env):
         self.Q: np.ndarray = np.array([1.0, 0.0, 0.0, 0.0])  # [w, x, y, z]
 
         # Reference generators
-        self.pose_control     = PoseControl()
+        self.yaw_rate_control = YawRateControl()
         self.velocity_control = VelocityControl(initial_phase=initial_curriculum_phase)
         self.training: bool   = True
 
@@ -142,11 +140,13 @@ class SelfBalancingRobotEnv(gym.Env):
                                      + (1.0 - self._action_filter_alpha) * action)
             self.data.ctrl[:] = self._filtered_action
         else:
+            # Always track the applied action so the reward wrapper can diff it
+            self._filtered_action[:] = action
             self.data.ctrl[:] = action
 
         if self.training:
             self.velocity_control.update(dt=self.time_step)
-            self.pose_control.update(dt=self.time_step)
+            self.yaw_rate_control.update(dt=self.time_step)
 
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)
@@ -168,7 +168,6 @@ class SelfBalancingRobotEnv(gym.Env):
 
         # Report episode outcome to curriculum (skip the very first call)
         if self.training and self.data.time > 0:
-            # True success = robot survived the full episode without falling
             success = self._is_truncated()
             self.velocity_control.report_episode_result(success)
 
@@ -183,15 +182,12 @@ class SelfBalancingRobotEnv(gym.Env):
     # ------------------------------------------------------------------ #
 
     def _is_terminated(self) -> bool:
-        """Robot fell over – pitch angle exceeded the safety limit."""
         return bool(abs(self._get_pitch()) > self.max_pitch)
 
     def _is_truncated(self) -> bool:
-        """Episode time limit reached (robot survived)."""
         return self.data.time >= self.max_time
 
     def _get_pitch(self) -> float:
-        """Pitch angle [rad] from the ideal quaternion in data.qpos."""
         q = self.data.qpos[3:7]
         r = R.from_quat([q[1], q[2], q[3], q[0]])
         return float(r.as_euler("xyz", degrees=False)[1])
@@ -208,12 +204,10 @@ class SelfBalancingRobotEnv(gym.Env):
         self._randomize_imu_pose()
         self._randomize_actuator_gains()
         self._randomize_wheel_friction()
-        # Reset reference generators for the new episode
         self.velocity_control.reset()
-        self.pose_control.generate_random()  # fully random initial heading each episode
+        self.yaw_rate_control.reset()
 
     def _space_positioning(self) -> None:
-        """Randomise starting position, pitch and yaw."""
         self.data.qpos[:3] = [
             np.random.uniform(-0.5, 0.5),
             np.random.uniform(-0.5, 0.5),
@@ -221,19 +215,17 @@ class SelfBalancingRobotEnv(gym.Env):
         ]
         euler = [
             0.0,
-            np.random.uniform(-0.1, 0.1),   # small pitch perturbation
-            np.random.uniform(-np.pi, np.pi),  # random yaw
+            np.random.uniform(-0.1, 0.1),
+            np.random.uniform(-np.pi, np.pi),
         ]
         q_xyzw = R.from_euler("xyz", euler).as_quat()
         q_mj   = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
         self.data.qpos[3:7] = q_mj
 
-        # Initialise Madgwick filter from the actual starting orientation
         self.Q = q_mj.copy()
 
     def _reset_ctrl(self) -> None:
         self.data.ctrl[:] = 0.0
-        # Small random initial body velocity to avoid overfitting to the exact upright start
         self.data.qvel[:2] = np.random.uniform(-0.05, 0.05, size=2)
         self.data.qvel[2:] = 0.0
 
@@ -246,7 +238,7 @@ class SelfBalancingRobotEnv(gym.Env):
 
     def _randomize_com(self) -> None:
         s = self.randomization_scale
-        max_offset = 0.008 * s  # up to ±8mm at full scale, 0 at test
+        max_offset = 0.008 * s
         for i in range(self.model.nbody):
             self.model.body_ipos[i] = (
                 self._original_body_ipos[i] + np.random.uniform(-max_offset, max_offset, size=3)
@@ -268,20 +260,18 @@ class SelfBalancingRobotEnv(gym.Env):
         s = self.randomization_scale
         for name in ("left_motor", "right_motor"):
             aid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            # Independent L/R gains to simulate real motor asymmetry
             self.model.actuator_gainprm[aid][0] = np.random.uniform(
                 20.0 - 4.0 * s, 20.0 + 4.0 * s
             )
 
     def _randomize_wheel_friction(self) -> None:
         s = self.randomization_scale
-        # Independent L/R friction to simulate floor/wheel asymmetry
         for name in ("WheelL_collision", "WheelR_collision"):
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
             self.model.geom_friction[gid] = [
-                np.random.uniform(0.90 - 0.09 * s, 0.90 + 0.09 * s),   # sliding
-                np.random.uniform(0.050 - 0.005 * s, 0.050 + 0.005 * s),  # torsional
-                np.random.uniform(0.0020 - 0.0002 * s, 0.0020 + 0.0002 * s),  # rolling
+                np.random.uniform(0.90 - 0.09 * s, 0.90 + 0.09 * s),
+                np.random.uniform(0.050 - 0.005 * s, 0.050 + 0.005 * s),
+                np.random.uniform(0.0020 - 0.0002 * s, 0.0020 + 0.0002 * s),
             ]
 
     # ------------------------------------------------------------------ #
@@ -330,15 +320,18 @@ class SelfBalancingRobotEnv(gym.Env):
         _, _, yaw = rot.as_euler("xyz", degrees=False)
         current_fwd = np.array([np.cos(yaw), np.sin(yaw), 0.0])
 
-        desired   = self.pose_control.heading
-        desired3d = np.array([desired[0], desired[1], 0.0])
-
-        self._render_vector(origin, desired3d,   [0.0, 1.0, 0.0, 1.0], scale=0.5)
+        # Red: current forward direction
         self._render_vector(origin, current_fwd, [1.0, 0.0, 0.0, 0.8], scale=0.5)
 
+        # Blue: current velocity magnitude along forward
         vel_ratio = self.velocity_control.speed / self.MAX_LIN_VEL
         vel_vec   = current_fwd * vel_ratio * 0.4
         self._render_vector(origin, vel_vec, [0.0, 0.0, 1.0, 0.8], scale=1.0)
+
+        # Green: desired turn direction (rotate forward by desired yaw rate × visual scale)
+        yaw_offset   = self.yaw_rate_control.rate * 0.25
+        desired_fwd  = np.array([np.cos(yaw + yaw_offset), np.sin(yaw + yaw_offset), 0.0])
+        self._render_vector(origin, desired_fwd, [0.0, 1.0, 0.0, 1.0], scale=0.4)
 
         self.viewer.sync()
         time.sleep(self.time_step)

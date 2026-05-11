@@ -11,7 +11,7 @@ from src.env.wrappers.observations import ObservationWrapper
 from src.env.robot import SelfBalancingRobotEnv
 from src.utils.files import compress_and_remove
 from src.utils.parser import parse_test_arguments, parse_model
-from src.env.control.pose_control import PoseControl
+from src.env.control.yaw_rate_control import YawRateControl, MAX_YAW_RATE
 from src.env.control.velocity_control import VelocityControl
 
 
@@ -113,15 +113,13 @@ if __name__ == "__main__":
         _kb_listener.daemon = True
         _kb_listener.start()
 
-        # Tuning parameters for arrow-key control
-        TURN_RATE  = np.deg2rad(3)   # rotation per step when Left/Right is held
-        SPEED_STEP = 0.02            # speed increment per step when Up/Down is held
-        MAX_SPEED  = 0.50            # m/s – phase-3 curriculum limit (physical max = 0.548)
+        SPEED_STEP = 0.02   # m/s increment per step when Up/Down is held
+        MAX_SPEED  = 0.50   # m/s – phase-3 curriculum limit
 
         print("Arrow-key control enabled:")
         print("  Up / Down    = increase / decrease speed")
-        print("  Left / Right = turn left / right")
-        print("  R            = reset heading & speed")
+        print("  Left / Right = turn left / right (hold for continuous rotation)")
+        print("  R            = reset speed to 0, yaw rate to 0")
 
     print("Test configuration:")
     print(f"  - Model: {POLICY}")
@@ -155,15 +153,13 @@ if __name__ == "__main__":
     model = MODEL.load(POLICY_PATH, env=env)
     print(f"Loaded model: {POLICY_PATH} ({'LSTM' if IS_LSTM else 'MLP'})")
 
-    # Access the unwrapped environment to get pose_control
+    # Access the unwrapped environment to get yaw_rate_control
     base_env: SelfBalancingRobotEnv = env.unwrapped  # type: ignore
-    pose_control: PoseControl = base_env.pose_control
+    yaw_rate_control: YawRateControl = base_env.yaw_rate_control
     velocity_control: VelocityControl = base_env.velocity_control
 
-    # In non-interactive mode: let the timer-based updates in step() handle
-    # heading and velocity changes automatically (pose_control switches every
-    # MIN_HOLD_TIME–MAX_HOLD_TIME seconds, velocity_control switches every
-    # MIN_HOLD_TIME–MAX_HOLD_TIME seconds).
+    # In non-interactive mode: timer-based updates in step() handle velocity and
+    # yaw rate changes automatically.
     # In interactive mode: disable automatic updates and use keyboard control.
 
     # Start curriculum at a meaningful phase so the test is representative.
@@ -179,17 +175,20 @@ if __name__ == "__main__":
         # ---- Reference update ----
         if INTERACTIVE:
             base_env.training = False  # disables timer-based updates in step()
+            # Yaw rate: commanded while key held, zero when released
             if keyboard.Key.left in keys_pressed:
-                pose_control.heading_angle = pose_control.heading_angle + TURN_RATE
-            if keyboard.Key.right in keys_pressed:
-                pose_control.heading_angle = pose_control.heading_angle - TURN_RATE
+                yaw_rate_control.rate = MAX_YAW_RATE
+            elif keyboard.Key.right in keys_pressed:
+                yaw_rate_control.rate = -MAX_YAW_RATE
+            else:
+                yaw_rate_control.rate = 0.0
             if keyboard.Key.up in keys_pressed:
                 velocity_control.speed = min(velocity_control.speed + SPEED_STEP, MAX_SPEED)
             if keyboard.Key.down in keys_pressed:
                 velocity_control.speed = max(velocity_control.speed - SPEED_STEP, -MAX_SPEED)
             if 'r' in keys_pressed:
-                pose_control.generate_random()
                 velocity_control.speed = 0.0
+                yaw_rate_control.rate  = 0.0
         # Non-interactive: timer-based updates fire automatically inside step()
 
         if IS_LSTM:
@@ -211,7 +210,6 @@ if __name__ == "__main__":
             obs, _ = env.reset()
             lstm_states = None
             episode_start = np.ones((1,), dtype=bool)
-            pose_control.generate_random()
 
     # Only recompress if the folder was extracted from an archive (not a live training folder)
     archive_existed = (

@@ -132,6 +132,7 @@ python test.py --path FOLDER_NAME
 | `WHEEL_TRACK` | 0.2982 m | Distance between wheels |
 | `MAX_CTRL` | 8.775 rad/s | Actuator control range |
 | `MAX_LIN_VEL` | 0.548 m/s | Physical forward speed limit |
+| `MAX_YAW_RATE` | 2.0 rad/s | Practical yaw rate reference limit |
 
 ---
 
@@ -165,23 +166,34 @@ SBRobot_DRL/
 
 ---
 
+## Control interface
+
+The robot uses a **(v, ω)** joystick-style interface:
+- **v** — forward velocity reference [m/s]
+- **ω** — yaw rate reference [rad/s] (positive = CCW / left, negative = CW / right)
+
+Both signals are directly measurable from wheel encoders and the gyroscope Z axis — no magnetometer or external localisation is needed, making sim-to-real transfer straightforward.
+
+---
+
 ## Reward structure
 
 ```
-r_balance  = exp(-(( pitch - K·vel_error ) / σ_pitch)²)   ∈ [0, 1]
-r_velocity = exp(-( vel_error / σ_vel )²)                   ∈ [0, 1]
-r_heading  = (1 + cos(heading_error)) / 2                   ∈ [0, 1]
-r_task     = r_balance × (w_b + w_v·r_velocity + w_h·r_heading)
-r_smooth   = −w_smooth × mean((Δaction / MAX_CTRL)²)
-r_yaw      = −w_yaw × (yaw_rate / GYRO_FSR)²
+r_balance  = exp(-((pitch - K·vel_error) / σ_pitch)²)   ∈ [0, 1]
+r_velocity = exp(-(vel_error / σ_vel)²)                  ∈ [0, 1]
+r_yaw      = exp(-(yaw_rate_error / σ_yaw)²)             ∈ [0, 1]
+r_task     = r_balance × (w_b + w_v·r_velocity + w_ω·r_yaw)
+r_smooth   = −w_smooth × mean((Δfiltered_action / MAX_CTRL)²)
 
-reward = r_task + r_smooth + r_yaw      (fall → −20)
+reward = r_task + r_smooth      (fall → −20)
 ```
 
 Key design choices:
 - **Balance gates everything**: no reward for tracking while tilted
 - **Pitch reference follows velocity error**: robot leans forward to accelerate, upright at cruise
-- **Cosine kernel for heading**: non-zero gradient at all error magnitudes (unlike Gaussian which collapses at >45°)
+- **Yaw rate interface**: tracks commanded ω [rad/s] instead of absolute heading — gyroscope Z provides a reliable, no-drift signal in short episodes
+- **Tight σ_vel at v=0**: prevents drift when standing still (σ=0.04 vs 0.35 at speed)
+- **Smoothness on filtered actions**: penalty on what the actuators actually do, not raw policy output
 - **Independent L/R randomization**: actuator gains and wheel friction randomized separately to simulate real hardware asymmetry
 
 ---
