@@ -144,8 +144,9 @@ class ObservationWrapper(gym.Wrapper):
         fwd_wheel_vel  = (wheel_vel[0] + wheel_vel[1]) * 0.5
         diff_wheel_vel = (wheel_vel[0] - wheel_vel[1])
 
-        fwd_vel_ms  = fwd_wheel_vel  * base.WHEEL_RADIUS
-        diff_vel_ms = diff_wheel_vel * base.WHEEL_RADIUS
+        # Negate forward: MuJoCo joint axes report positive when moving backward.
+        fwd_vel_ms  = -fwd_wheel_vel  * base.WHEEL_RADIUS
+        diff_vel_ms =  diff_wheel_vel * base.WHEEL_RADIUS
 
         # --- 3. Setpoints and errors ---
         target_vel      = base.velocity_control.speed

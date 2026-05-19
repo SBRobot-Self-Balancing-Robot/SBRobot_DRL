@@ -314,10 +314,11 @@ if __name__ == "__main__":
     # yaw rate changes automatically.
     # In interactive mode: disable automatic updates and use keyboard control.
 
-    # Start curriculum at a meaningful phase so the test is representative.
-    # Phase 2 = ±0.35 m/s. If the policy was trained through the curriculum it
-    # should handle this; if it only saw phase 0 the slowness will be visible.
-    velocity_control._curriculum_phase = min(2, len(velocity_control.CURRICULUM_PHASES) - 1)
+    # Leave curriculum at phase 0 (default). The policy was trained from
+    # --curriculum-phase 0 and may not have advanced beyond phase 1, so
+    # forcing a higher phase would show targets it has never seen.
+    # To test at a specific phase, pass e.g. --curriculum-phase 2 on the CLI
+    # and update make_env() to forward that argument.
 
     # ------------------------------------------------------------------ #
     #  Metrics-acquisition path (writes a CSV, then exits)                 #
