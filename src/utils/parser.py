@@ -117,6 +117,40 @@ def parse_test_arguments():
     parser.add_argument("--interactive", action="store_true",
                         help="Enable interactive mode (default: False)")
 
+    # ---- Metrics acquisition ----
+    parser.add_argument("--metrics-csv", type=str, default=None,
+                        help="If set, record per-step metrics (pitch oscillation, "
+                             "velocity error, yaw-rate error, reward components) and "
+                             "write them to this CSV file. Implies headless data "
+                             "collection unless --render is also given.")
+
+    parser.add_argument("--episodes", type=int, default=20,
+                        help="Number of episodes to roll out per curriculum phase when "
+                             "collecting metrics (default: 20).")
+
+    parser.add_argument("--sweep-phases", action="store_true",
+                        help="When collecting metrics, run --episodes episodes in EACH "
+                             "curriculum phase (0-3) and tag every row with its phase. "
+                             "Enables the curriculum-learning analysis in a single run.")
+
+    parser.add_argument("--curriculum-phase", type=int, default=3,
+                        help="Curriculum phase to evaluate when NOT sweeping (0-3, "
+                             "default: 3 = full ±0.50 m/s range).")
+
+    parser.add_argument("--randomization-scale", type=float, default=0.0,
+                        help="Domain-randomization scale during testing (0.0 = nominal "
+                             "robot, 1.0 = full training-time randomization). Used for "
+                             "the domain-randomization ablation (default: 0.0).")
+
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Label stored in the 'tag' column of the metrics CSV so "
+                             "that several runs (different policies / settings) can be "
+                             "compared by plot.py (default: derived from --path).")
+
+    parser.add_argument("--render", action="store_true",
+                        help="Force rendering on even while collecting metrics "
+                             "(default: metrics collection runs headless).")
+
     return parser.parse_args()
 
 
