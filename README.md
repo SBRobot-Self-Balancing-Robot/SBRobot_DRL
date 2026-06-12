@@ -6,13 +6,18 @@ Training and testing a two-wheeled self-balancing robot (Segway-type) using PPO 
 
 Best checkpoint: `PPO_v2` — robot balances, tracks velocity and heading across all curriculum phases.
 
-**Cycle 9** (most trained):
-![PPO_v2 cycle 9](assets/demo_iter9.png)
+**PPO:**
 
-**Cycle 8:**
-![PPO_v2 cycle 8](assets/demo_iter8.png)
+<p align="center">
+  <img src="assets/PPO.gif" alt="PPO demo">
+</p>
 
-Full videos: [policies/PPO_v2/videos/](policies/PPO_v2/videos/)
+**SAC:**
+
+<p align="center">
+  <img src="assets/SAC.gif" alt="SAC demo">
+</p>
+
 
 ---
 
